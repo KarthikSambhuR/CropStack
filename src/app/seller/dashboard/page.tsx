@@ -19,7 +19,7 @@ import {
 import { useLanguage } from '@/context/LanguageContext';
 import Link from 'next/link';
 
-const API_BASE = 'http://localhost:5000/api';
+import { API_BASE } from '@/lib/firebase';
 
 type SellerStats = {
     available_balance: number;
@@ -232,7 +232,7 @@ export default function SellerDashboard() {
                             <div className="card-white" style={{ padding: '2.5rem', background: 'var(--secondary)', color: 'white' }}>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
                                     <h3 style={{ color: 'white', fontSize: '1.25rem' }}>Performance</h3>
-                                    <Link href="/market-intelligence" style={{ color: 'var(--primary)', fontWeight: 800, fontSize: '0.8rem', textDecoration: 'none' }}>View Details <ArrowUpRight size={14} /></Link>
+                                    <Link href="/market" style={{ color: 'var(--primary)', fontWeight: 800, fontSize: '0.8rem', textDecoration: 'none' }}>View Details <ArrowUpRight size={14} /></Link>
                                 </div>
                                 <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
                                     <div>

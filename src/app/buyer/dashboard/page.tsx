@@ -6,7 +6,7 @@ import { ShoppingBag, Calendar, TrendingUp, ArrowUpRight, ArrowDownRight, Info, 
 import { useLanguage } from '@/context/LanguageContext';
 import Link from 'next/link';
 
-const API_BASE = 'http://localhost:5000/api';
+import { API_BASE } from '@/lib/firebase';
 
 type MarketItem = {
     name: string;
@@ -196,7 +196,7 @@ export default function BuyerDashboard() {
                                     </div>
                                 ))}
                             </div>
-                            <Link href="/market-intelligence" className="btn-modern btn-primary-modern" style={{ width: '100%', marginTop: '1.75rem', height: '52px' }}>
+                            <Link href="/market" className="btn-modern btn-primary-modern" style={{ width: '100%', marginTop: '1.75rem', height: '52px' }}>
                                 View All Market Prices
                             </Link>
                         </div>

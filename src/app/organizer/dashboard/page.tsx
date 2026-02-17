@@ -2,10 +2,15 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import DashboardLayout from '@/components/DashboardLayout';
+import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
-import { Truck, ClipboardList, Search, Loader2, QrCode, ArrowRight, ShieldCheck, Warehouse, Thermometer, Droplets, Sprout, Wind } from 'lucide-react';
+import {
+    Truck, ClipboardList, Search, Loader2, QrCode, ArrowRight,
+    ShieldCheck, Warehouse, Thermometer, Droplets, Wind, Activity,
+    Signal, Clock, AlertTriangle, CheckCircle2, ChevronDown
+} from 'lucide-react';
 
-const API_BASE = 'http://localhost:5000/api';
+import { API_BASE } from '@/lib/firebase';
 
 type OrderItem = {
     id: string;
@@ -29,7 +34,6 @@ type OrganizerStats = {
 type SensorData = {
     temperature: number;
     humidity: number;
-    soil_moisture: number;
     light_intensity: number;
     ph_level: number;
     wind_speed: number;
@@ -39,39 +43,90 @@ type SensorData = {
     uv_index: number;
 };
 
+type HubData = {
+    id: string;
+    name: string;
+    organizer_id: string;
+    organizer_email: string;
+    temperature: number;
+    moisture: number;
+    last_updated: string;
+    status: string;
+};
+
+function getTimeAgo(isoStr: string): string {
+    if (!isoStr) return 'Never';
+    const diff = Date.now() - new Date(isoStr).getTime();
+    const secs = Math.floor(diff / 1000);
+    if (secs < 60) return `${secs}s ago`;
+    const mins = Math.floor(secs / 60);
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return `${Math.floor(hours / 24)}d ago`;
+}
+
+function getTempStatus(temp: number): { color: string; label: string; bg: string } {
+    if (temp > 40) return { color: '#ef4444', label: 'CRITICAL', bg: '#fef2f2' };
+    if (temp > 35) return { color: '#f59e0b', label: 'HIGH', bg: '#fffbeb' };
+    if (temp < 10) return { color: '#3b82f6', label: 'LOW', bg: '#eff6ff' };
+    return { color: '#059669', label: 'NORMAL', bg: '#ecfdf5' };
+}
+
+function getMoistStatus(moist: number): { color: string; label: string; bg: string } {
+    if (moist < 20) return { color: '#ef4444', label: 'CRITICAL', bg: '#fef2f2' };
+    if (moist < 35) return { color: '#f59e0b', label: 'LOW', bg: '#fffbeb' };
+    if (moist > 80) return { color: '#3b82f6', label: 'HIGH', bg: '#eff6ff' };
+    return { color: '#059669', label: 'OPTIMAL', bg: '#ecfdf5' };
+}
+
 export default function OrganizerDashboard() {
     const { t } = useLanguage();
+    const { user, profile } = useAuth();
     const [orders, setOrders] = useState<OrderItem[]>([]);
     const [stats, setStats] = useState<OrganizerStats | null>(null);
     const [sensors, setSensors] = useState<SensorData | null>(null);
+    const [hubs, setHubs] = useState<HubData[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
     const [confirming, setConfirming] = useState<string | null>(null);
     const [error, setError] = useState(false);
+    const [expandedHub, setExpandedHub] = useState<string | null>(null);
+    const [lastSync, setLastSync] = useState<Date | null>(null);
 
     const fetchData = useCallback(async () => {
         try {
-            const [orgRes, sensorRes] = await Promise.all([
+            // Build hub query — filter by logged-in organizer's email
+            const email = profile?.email || user?.email || '';
+            const hubUrl = email
+                ? `${API_BASE}/hubs?organizer_email=${encodeURIComponent(email)}`
+                : `${API_BASE}/hubs`;
+
+            const [orgRes, sensorRes, hubsRes] = await Promise.all([
                 fetch(`${API_BASE}/stats/organizer`),
                 fetch(`${API_BASE}/sensors`),
+                fetch(hubUrl),
             ]);
 
             if (!orgRes.ok || !sensorRes.ok) throw new Error('API error');
 
             const orgData = await orgRes.json();
             const sensorData = await sensorRes.json();
+            const hubsData = hubsRes.ok ? await hubsRes.json() : { hubs: [] };
 
             setStats(orgData.stats);
             setOrders(orgData.orders || []);
             setSensors(sensorData.sensors);
+            setHubs(hubsData.hubs || []);
             setError(false);
+            setLastSync(new Date());
         } catch (err) {
             console.error('Failed to fetch data:', err);
             setError(true);
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [profile?.email, user?.email]);
 
     useEffect(() => {
         fetchData();
@@ -82,17 +137,15 @@ export default function OrganizerDashboard() {
     const handleConfirmPickup = async (order: OrderItem) => {
         if (confirming) return;
         setConfirming(order.id);
-
         try {
             const res = await fetch(`${API_BASE}/orders/${order.id}/complete`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
             });
-
-            if (!res.ok) throw new Error('Failed to complete order');
+            if (!res.ok) throw new Error('Failed');
             await fetchData();
         } catch (err) {
-            console.error('Finalization protocol error:', err);
+            console.error('Error:', err);
             alert('Failed to complete order. Please try again.');
         } finally {
             setConfirming(null);
@@ -107,45 +160,225 @@ export default function OrganizerDashboard() {
         )
     );
 
+    const onlineHubs = hubs.filter(h => h.status === 'online').length;
+    const avgTemp = hubs.length ? hubs.reduce((s, h) => s + h.temperature, 0) / hubs.length : 0;
+    const avgMoist = hubs.length ? hubs.reduce((s, h) => s + h.moisture, 0) / hubs.length : 0;
+
     return (
         <DashboardLayout role="organizer">
-            <div style={{ marginBottom: '2.5rem' }}>
-                <h1 style={{ fontSize: '2.25rem', fontWeight: 900, letterSpacing: '-0.05em' }}>Regional Hub <span style={{ color: 'var(--primary)' }}>Manager.</span></h1>
-                <p style={{ color: 'var(--text-muted)', fontSize: '1rem', fontWeight: 500 }}>
-                    {error ? '⚠️ Sensor API offline — showing cached data' : 'Operational visibility for storage node cluster.'}
-                </p>
+            {/* Title Section */}
+            <div style={{ marginBottom: '2rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                    <div>
+                        <h1 style={{ fontSize: '2.25rem', fontWeight: 900, letterSpacing: '-0.05em', lineHeight: 1.1 }}>
+                            Hub <span style={{ color: 'var(--primary)' }}>Command Center.</span>
+                        </h1>
+                        <p style={{ color: 'var(--text-muted)', fontSize: '1rem', fontWeight: 500, marginTop: '0.5rem' }}>
+                            {error
+                                ? '⚠️ Sensor API offline — showing cached data'
+                                : `Monitoring ${hubs.length} hub${hubs.length !== 1 ? 's' : ''} assigned to your account`
+                            }
+                        </p>
+                    </div>
+                    {lastSync && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 1rem', background: '#f8fafc', borderRadius: '10px', border: '1px solid var(--border-soft)' }}>
+                            <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: error ? 'var(--error)' : 'var(--success)', animation: error ? 'none' : 'pulse 2s infinite' }} />
+                            <span style={{ fontFamily: 'monospace', fontSize: '0.7rem', fontWeight: 600, color: 'var(--text-soft)' }}>
+                                Last sync: {lastSync.toLocaleTimeString()}
+                            </span>
+                        </div>
+                    )}
+                </div>
             </div>
 
-            {/* Sensor Strip */}
-            {sensors && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem', marginBottom: '1.5rem' }}>
-                    {[
-                        { label: 'Temperature', value: `${sensors.temperature.toFixed(1)}°C`, icon: Thermometer, color: sensors.temperature > 35 ? 'var(--error)' : 'var(--primary)' },
-                        { label: 'Humidity', value: `${sensors.humidity.toFixed(1)}%`, icon: Droplets, color: 'var(--primary)' },
-                        { label: 'Soil Moisture', value: `${sensors.soil_moisture.toFixed(1)}%`, icon: Sprout, color: 'var(--warning)' },
-                        { label: 'Wind Speed', value: `${sensors.wind_speed.toFixed(1)} km/h`, icon: Wind, color: 'var(--secondary)' },
-                    ].map((s, i) => (
-                        <div key={i} style={{ padding: '0.875rem 1rem', background: '#f8fafc', border: '1px solid var(--border-soft)', borderRadius: '12px', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                            <s.icon size={18} color={s.color} />
-                            <div>
-                                <p style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--text-soft)', textTransform: 'uppercase' }}>{s.label}</p>
-                                <p style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--secondary)' }}>{s.value}</p>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            )}
-
             {loading ? (
-                <div style={{ display: 'flex', justifyContent: 'center', padding: '3rem' }}>
-                    <Loader2 size={32} color="var(--primary)" style={{ animation: 'spin 1s linear infinite' }} />
+                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '6rem', flexDirection: 'column', gap: '1rem' }}>
+                    <Loader2 size={36} color="var(--primary)" style={{ animation: 'spin 1s linear infinite' }} />
+                    <p style={{ color: 'var(--text-soft)', fontWeight: 600, fontSize: '0.9rem' }}>Synchronizing hub data...</p>
                 </div>
             ) : (
                 <>
+
+                    {/* Hub Overview Stats */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1rem', marginBottom: '2rem' }}>
+                        <div className="card-white" style={{ padding: '1.5rem' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                                <span style={{ fontSize: '0.7rem', fontWeight: 800, color: 'var(--text-soft)', textTransform: 'uppercase', letterSpacing: '1px' }}>My Hubs</span>
+                                <div style={{ width: '36px', height: '36px', background: 'var(--primary-soft)', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                    <Warehouse size={18} color="var(--primary)" />
+                                </div>
+                            </div>
+                            <h2 style={{ fontSize: '2rem', fontWeight: 900, marginBottom: '0.25rem' }}>{hubs.length}</h2>
+                            <p style={{ fontSize: '0.7rem', color: 'var(--text-soft)', fontWeight: 600 }}>{onlineHubs} online • {hubs.length - onlineHubs} offline</p>
+                        </div>
+
+                        <div className="card-white" style={{ padding: '1.5rem' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                                <span style={{ fontSize: '0.7rem', fontWeight: 800, color: 'var(--text-soft)', textTransform: 'uppercase', letterSpacing: '1px' }}>Avg Temp</span>
+                                <div style={{ width: '36px', height: '36px', background: getTempStatus(avgTemp).bg, borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                    <Thermometer size={18} color={getTempStatus(avgTemp).color} />
+                                </div>
+                            </div>
+                            <h2 style={{ fontSize: '2rem', fontWeight: 900, color: getTempStatus(avgTemp).color, marginBottom: '0.25rem' }}>
+                                {hubs.length ? avgTemp.toFixed(1) : '--'}°C
+                            </h2>
+                            <p style={{ fontSize: '0.7rem', color: 'var(--text-soft)', fontWeight: 600 }}>Across all hubs</p>
+                        </div>
+
+                        <div className="card-white" style={{ padding: '1.5rem' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                                <span style={{ fontSize: '0.7rem', fontWeight: 800, color: 'var(--text-soft)', textTransform: 'uppercase', letterSpacing: '1px' }}>Avg Moisture</span>
+                                <div style={{ width: '36px', height: '36px', background: getMoistStatus(avgMoist).bg, borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                    <Droplets size={18} color={getMoistStatus(avgMoist).color} />
+                                </div>
+                            </div>
+                            <h2 style={{ fontSize: '2rem', fontWeight: 900, color: getMoistStatus(avgMoist).color, marginBottom: '0.25rem' }}>
+                                {hubs.length ? avgMoist.toFixed(1) : '--'}%
+                            </h2>
+                            <p style={{ fontSize: '0.7rem', color: 'var(--text-soft)', fontWeight: 600 }}>Across all hubs</p>
+                        </div>
+
+                        <div className="card-white" style={{ padding: '1.5rem' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                                <span style={{ fontSize: '0.7rem', fontWeight: 800, color: 'var(--text-soft)', textTransform: 'uppercase', letterSpacing: '1px' }}>Pending Orders</span>
+                                <div style={{ width: '36px', height: '36px', background: 'var(--primary-soft)', borderRadius: '10px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                    <ClipboardList size={18} color="var(--primary)" />
+                                </div>
+                            </div>
+                            <h2 style={{ fontSize: '2rem', fontWeight: 900, marginBottom: '0.25rem' }}>{filteredOrders.length}</h2>
+                            <p style={{ fontSize: '0.7rem', color: 'var(--text-soft)', fontWeight: 600 }}>Awaiting clearance</p>
+                        </div>
+                    </div>
+
+                    {/* Hub Cards */}
+                    <div style={{ marginBottom: '2.5rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
+                            <div>
+                                <h3 style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--secondary)' }}>My Sensor Hubs</h3>
+                                <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: 500 }}>Real-time temperature & moisture from your assigned hubs</p>
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <Signal size={14} color="var(--success)" />
+                                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--success)' }}>Live • 5s polling</span>
+                            </div>
+                        </div>
+
+                        {hubs.length === 0 ? (
+                            <div className="card-white" style={{ padding: '4rem', textAlign: 'center', borderStyle: 'dashed' }}>
+                                <Warehouse size={48} color="#94a3b8" style={{ marginBottom: '1.25rem', opacity: 0.4 }} />
+                                <h4 style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--secondary)', marginBottom: '0.5rem' }}>No Hubs Assigned</h4>
+                                <p style={{ color: 'var(--text-soft)', fontSize: '0.9rem', fontWeight: 500, maxWidth: '360px', margin: '0 auto' }}>
+                                    No sensor hubs are currently assigned to your account ({profile?.email}). Contact your administrator to get hubs assigned.
+                                </p>
+                            </div>
+                        ) : (
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '1rem' }}>
+                                {hubs.map((hub) => {
+                                    const tempSt = getTempStatus(hub.temperature);
+                                    const moistSt = getMoistStatus(hub.moisture);
+                                    const isExpanded = expandedHub === hub.id;
+                                    return (
+                                        <div key={hub.id} className="card-white" style={{
+                                            padding: 0, position: 'relative', overflow: 'hidden',
+                                            transition: 'all 0.3s cubic-bezier(0.16, 1, 0.3, 1)',
+                                            transform: isExpanded ? 'scale(1.02)' : 'scale(1)',
+                                            boxShadow: isExpanded ? '0 20px 40px -10px rgba(5, 150, 105, 0.15)' : undefined,
+                                        }}>
+                                            {/* Top accent bar */}
+                                            <div style={{ height: '3px', background: `linear-gradient(90deg, ${tempSt.color}, ${moistSt.color})` }} />
+
+                                            <div style={{ padding: '1.25rem' }}>
+                                                {/* Header */}
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.625rem' }}>
+                                                        <div style={{ width: '32px', height: '32px', background: 'var(--primary-soft)', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                                            <Warehouse size={16} color="var(--primary)" />
+                                                        </div>
+                                                        <div>
+                                                            <p style={{ fontSize: '0.85rem', fontWeight: 800, color: 'var(--secondary)', lineHeight: 1.2 }}>{hub.name}</p>
+                                                            <p style={{ fontFamily: 'monospace', fontSize: '0.6rem', fontWeight: 600, color: 'var(--primary)' }}>{hub.id}</p>
+                                                        </div>
+                                                    </div>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+                                                        <div style={{
+                                                            width: '7px', height: '7px', borderRadius: '50%',
+                                                            background: hub.status === 'online' ? 'var(--success)' : 'var(--error)',
+                                                            boxShadow: hub.status === 'online' ? '0 0 8px rgba(16,185,129,0.5)' : 'none',
+                                                            animation: hub.status === 'online' ? 'pulse 2s infinite' : 'none'
+                                                        }} />
+                                                        <span style={{
+                                                            fontSize: '0.6rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px',
+                                                            color: hub.status === 'online' ? 'var(--success)' : 'var(--error)'
+                                                        }}>{hub.status}</span>
+                                                    </div>
+                                                </div>
+
+                                                {/* Sensor Readings */}
+                                                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.625rem', marginBottom: '0.75rem' }}>
+                                                    <div style={{
+                                                        padding: '0.875rem', background: tempSt.bg, borderRadius: '12px',
+                                                        border: `1px solid ${tempSt.color}15`, position: 'relative', overflow: 'hidden'
+                                                    }}>
+                                                        <div style={{ position: 'absolute', top: '0.5rem', right: '0.5rem', opacity: 0.15 }}>
+                                                            <Thermometer size={28} color={tempSt.color} />
+                                                        </div>
+                                                        <p style={{ fontSize: '0.55rem', fontWeight: 800, color: tempSt.color, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.25rem' }}>Temperature</p>
+                                                        <p style={{ fontFamily: 'monospace', fontSize: '1.5rem', fontWeight: 900, color: tempSt.color, lineHeight: 1 }}>
+                                                            {hub.temperature.toFixed(1)}<span style={{ fontSize: '0.75rem', fontWeight: 600 }}>°C</span>
+                                                        </p>
+                                                        <span style={{
+                                                            display: 'inline-block', marginTop: '0.375rem', fontSize: '0.5rem', fontWeight: 800,
+                                                            padding: '0.15rem 0.375rem', borderRadius: '4px', background: `${tempSt.color}20`, color: tempSt.color
+                                                        }}>{tempSt.label}</span>
+                                                    </div>
+
+                                                    <div style={{
+                                                        padding: '0.875rem', background: moistSt.bg, borderRadius: '12px',
+                                                        border: `1px solid ${moistSt.color}15`, position: 'relative', overflow: 'hidden'
+                                                    }}>
+                                                        <div style={{ position: 'absolute', top: '0.5rem', right: '0.5rem', opacity: 0.15 }}>
+                                                            <Droplets size={28} color={moistSt.color} />
+                                                        </div>
+                                                        <p style={{ fontSize: '0.55rem', fontWeight: 800, color: moistSt.color, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '0.25rem' }}>Moisture</p>
+                                                        <p style={{ fontFamily: 'monospace', fontSize: '1.5rem', fontWeight: 900, color: moistSt.color, lineHeight: 1 }}>
+                                                            {hub.moisture.toFixed(1)}<span style={{ fontSize: '0.75rem', fontWeight: 600 }}>%</span>
+                                                        </p>
+                                                        <span style={{
+                                                            display: 'inline-block', marginTop: '0.375rem', fontSize: '0.5rem', fontWeight: 800,
+                                                            padding: '0.15rem 0.375rem', borderRadius: '4px', background: `${moistSt.color}20`, color: moistSt.color
+                                                        }}>{moistSt.label}</span>
+                                                    </div>
+                                                </div>
+
+                                                {/* Footer */}
+                                                <div style={{
+                                                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                                                    paddingTop: '0.625rem', borderTop: '1px solid var(--border-soft)'
+                                                }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+                                                        <Clock size={11} color="var(--text-soft)" />
+                                                        <span style={{ fontSize: '0.6rem', color: 'var(--text-soft)', fontWeight: 600 }}>
+                                                            Updated {getTimeAgo(hub.last_updated)}
+                                                        </span>
+                                                    </div>
+                                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                                                        <Activity size={11} color="var(--primary)" />
+                                                        <span style={{ fontSize: '0.6rem', color: 'var(--primary)', fontWeight: 700 }}>LIVE</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Stats Row */}
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1.5rem', marginBottom: '3rem' }}>
                         <div className="card-white" style={{ padding: '2rem' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
-                                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-soft)', textTransform: 'uppercase', letterSpacing: '1px' }}>Active Queue</span>
+                                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-soft)', textTransform: 'uppercase', letterSpacing: '1px' }}>Queue</span>
                                 <div style={{ width: '40px', height: '40px', background: 'var(--primary-soft)', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                                     <ClipboardList size={20} color="var(--primary)" />
                                 </div>
@@ -156,7 +389,7 @@ export default function OrganizerDashboard() {
 
                         <div className="card-white" style={{ padding: '2rem' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
-                                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-soft)', textTransform: 'uppercase', letterSpacing: '1px' }}>Gate Traffic</span>
+                                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-soft)', textTransform: 'uppercase', letterSpacing: '1px' }}>Traffic</span>
                                 <div style={{ width: '40px', height: '40px', background: 'var(--success-soft)', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                                     <Truck size={20} color="var(--success)" />
                                 </div>
@@ -167,93 +400,100 @@ export default function OrganizerDashboard() {
 
                         <div className="card-white" style={{ padding: '2rem' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
-                                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-soft)', textTransform: 'uppercase', letterSpacing: '1px' }}>Hub Security</span>
+                                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-soft)', textTransform: 'uppercase', letterSpacing: '1px' }}>Security</span>
                                 <ShieldCheck size={24} color="var(--primary)" />
                             </div>
                             <h2 style={{ fontSize: '2rem', fontWeight: 900, marginBottom: '0.5rem' }}>{stats?.hub_security || 0}%</h2>
                             <p style={{ fontSize: '0.75rem', color: 'var(--text-soft)', fontWeight: 600 }}>Node Health Index</p>
                         </div>
 
-                        <div className="card-white glass-dark" style={{ padding: '2rem', color: 'white' }}>
+                        <div className="card-white" style={{ padding: '2rem' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
-                                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'rgba(255,255,255,0.5)', textTransform: 'uppercase', letterSpacing: '1px' }}>Flow Volume</span>
+                                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-soft)', textTransform: 'uppercase', letterSpacing: '1px' }}>Volume</span>
                                 <Warehouse size={20} color="var(--primary)" />
                             </div>
                             <h2 style={{ fontSize: '2rem', fontWeight: 900, marginBottom: '0.5rem' }}>{t('currency_symbol')}{(stats?.flow_volume || 0).toLocaleString()}</h2>
-                            <p style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.4)', fontWeight: 600 }}>Settlement velocity</p>
+                            <p style={{ fontSize: '0.75rem', color: 'var(--text-soft)', fontWeight: 600 }}>Settlement velocity</p>
                         </div>
                     </div>
 
+                    {/* Orders Table */}
                     <div className="card-white" style={{ padding: '2.5rem' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '3rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2.5rem' }}>
                             <div>
                                 <h3 style={{ fontSize: '1.25rem', fontWeight: 800 }}>Clearance Terminal</h3>
                                 <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 500 }}>Scan and verify Pickup PINs for outbound release.</p>
                             </div>
-
                             <div style={{ display: 'flex', gap: '1rem' }}>
-                                <div style={{ position: 'relative', width: '320px' }}>
+                                <div style={{ position: 'relative', width: '280px' }}>
                                     <Search size={18} style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-soft)' }} />
                                     <input
                                         type="text"
                                         className="input-modern"
                                         placeholder="Filter by PIN or Buyer..."
-                                        style={{ paddingLeft: '2.75rem', height: '48px', fontSize: '0.9rem' }}
+                                        style={{ paddingLeft: '2.75rem', height: '44px', fontSize: '0.85rem' }}
                                         value={searchTerm}
                                         onChange={(e) => setSearchTerm(e.target.value)}
                                     />
                                 </div>
-                                <button className="btn-modern btn-primary-modern" style={{ height: '48px', padding: '0 1.5rem' }}>
-                                    <QrCode size={18} /> Launch Scanner
+                                <button className="btn-modern btn-primary-modern" style={{ height: '44px', padding: '0 1.25rem' }}>
+                                    <QrCode size={18} /> Scanner
                                 </button>
                             </div>
                         </div>
 
                         {filteredOrders.length === 0 ? (
-                            <div style={{ textAlign: 'center', padding: '6rem', background: 'var(--bg-main)', borderRadius: '24px', border: '1px dashed var(--border)' }}>
-                                <Warehouse size={48} color="#94a3b8" style={{ marginBottom: '1.5rem', opacity: 0.5 }} />
-                                <h4 style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--secondary)' }}>Hub Synchronized</h4>
-                                <p style={{ color: 'var(--text-soft)', fontSize: '0.95rem', fontWeight: 500, marginTop: '0.5rem' }}>No active pre-order lots currently scheduled for release.</p>
+                            <div style={{ textAlign: 'center', padding: '5rem', background: 'var(--bg-main)', borderRadius: '20px', border: '1px dashed var(--border)' }}>
+                                <CheckCircle2 size={48} color="#94a3b8" style={{ marginBottom: '1.25rem', opacity: 0.4 }} />
+                                <h4 style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--secondary)' }}>All Clear</h4>
+                                <p style={{ color: 'var(--text-soft)', fontSize: '0.9rem', fontWeight: 500, marginTop: '0.5rem' }}>No pending orders at this time.</p>
                             </div>
                         ) : (
                             <div style={{ overflowX: 'auto' }}>
-                                <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: '0 0.75rem' }}>
+                                <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: '0 0.625rem' }}>
                                     <thead>
-                                        <tr style={{ color: 'var(--text-soft)', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                                            <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 800 }}>Validation PIN</th>
-                                            <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 800 }}>Counterparty</th>
-                                            <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 800 }}>Storage Lot</th>
-                                            <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 800 }}>Audit Val</th>
-                                            <th style={{ padding: '1rem', textAlign: 'right', fontWeight: 800 }}>Protocol</th>
+                                        <tr style={{ color: 'var(--text-soft)', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1px' }}>
+                                            <th style={{ padding: '0.75rem 1rem', textAlign: 'left', fontWeight: 800 }}>PIN</th>
+                                            <th style={{ padding: '0.75rem 1rem', textAlign: 'left', fontWeight: 800 }}>Buyer</th>
+                                            <th style={{ padding: '0.75rem 1rem', textAlign: 'left', fontWeight: 800 }}>Product</th>
+                                            <th style={{ padding: '0.75rem 1rem', textAlign: 'left', fontWeight: 800 }}>Value</th>
+                                            <th style={{ padding: '0.75rem 1rem', textAlign: 'right', fontWeight: 800 }}>Action</th>
                                         </tr>
                                     </thead>
                                     <tbody>
                                         {filteredOrders.map((order) => (
-                                            <tr key={order.id} style={{ background: 'white', borderRadius: '14px' }}>
-                                                <td style={{ padding: '1.5rem 1rem' }}>
-                                                    <span style={{ fontWeight: 900, color: 'var(--primary)', letterSpacing: '2px', background: 'var(--primary-soft)', padding: '0.625rem 1rem', borderRadius: '10px', fontSize: '1rem', border: '1px solid rgba(5, 150, 105, 0.1)' }}>
+                                            <tr key={order.id} style={{ background: 'white' }}>
+                                                <td style={{ padding: '1.25rem 1rem' }}>
+                                                    <span style={{
+                                                        fontWeight: 900, color: 'var(--primary)', letterSpacing: '2px',
+                                                        background: 'var(--primary-soft)', padding: '0.5rem 0.875rem', borderRadius: '10px',
+                                                        fontSize: '0.95rem', border: '1px solid rgba(5, 150, 105, 0.1)'
+                                                    }}>
                                                         {order.pickup_code}
                                                     </span>
                                                 </td>
-                                                <td style={{ padding: '1.5rem 1rem' }}>
-                                                    <p style={{ fontWeight: 800, fontSize: '0.95rem', color: 'var(--secondary)' }}>{order.buyer_name || 'Anonymous Node'}</p>
-                                                    <p style={{ fontSize: '0.7rem', color: 'var(--text-soft)', fontWeight: 800, textTransform: 'uppercase' }}>Verified Network ID</p>
+                                                <td style={{ padding: '1.25rem 1rem' }}>
+                                                    <p style={{ fontWeight: 800, fontSize: '0.9rem', color: 'var(--secondary)' }}>{order.buyer_name || 'Anonymous'}</p>
+                                                    <p style={{ fontSize: '0.65rem', color: 'var(--text-soft)', fontWeight: 700, textTransform: 'uppercase' }}>Verified ID</p>
                                                 </td>
-                                                <td style={{ padding: '1.5rem 1rem' }}>
-                                                    <p style={{ fontWeight: 800, fontSize: '0.95rem', color: 'var(--secondary)' }}>{order.product_name}</p>
-                                                    <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>{order.quantity} {t('unit_q')} (Slot {order.product_id.slice(0, 4).toUpperCase()})</p>
+                                                <td style={{ padding: '1.25rem 1rem' }}>
+                                                    <p style={{ fontWeight: 800, fontSize: '0.9rem', color: 'var(--secondary)' }}>{order.product_name}</p>
+                                                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 500 }}>{order.quantity} {t('unit_q')}</p>
                                                 </td>
-                                                <td style={{ padding: '1.5rem 1rem' }}>
-                                                    <span style={{ fontWeight: 900, fontSize: '1.1rem', color: 'var(--secondary)' }}>{t('currency_symbol')}{order.total_price.toFixed(2)}</span>
+                                                <td style={{ padding: '1.25rem 1rem' }}>
+                                                    <span style={{ fontWeight: 900, fontSize: '1.05rem', color: 'var(--secondary)' }}>{t('currency_symbol')}{order.total_price.toLocaleString()}</span>
                                                 </td>
-                                                <td style={{ padding: '1.5rem 1rem', textAlign: 'right' }}>
+                                                <td style={{ padding: '1.25rem 1rem', textAlign: 'right' }}>
                                                     <button
                                                         onClick={() => handleConfirmPickup(order)}
                                                         className="btn-modern btn-primary-modern"
-                                                        style={{ height: '42px', padding: '0 1.25rem', borderRadius: '12px' }}
+                                                        style={{ height: '40px', padding: '0 1rem', borderRadius: '10px', fontSize: '0.8rem' }}
                                                         disabled={!!confirming}
                                                     >
-                                                        {confirming === order.id ? <Loader2 size={18} style={{ animation: 'spin 1s linear infinite' }} /> : <>Verify Release <ArrowRight size={16} /></>}
+                                                        {confirming === order.id
+                                                            ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} />
+                                                            : <>Release <ArrowRight size={14} /></>
+                                                        }
                                                     </button>
                                                 </td>
                                             </tr>
@@ -265,6 +505,16 @@ export default function OrganizerDashboard() {
                     </div>
                 </>
             )}
+
+            <style jsx>{`
+                @keyframes pulse {
+                    0%, 100% { opacity: 1; }
+                    50% { opacity: 0.4; }
+                }
+                @keyframes spin {
+                    to { transform: rotate(360deg); }
+                }
+            `}</style>
         </DashboardLayout>
     );
 }

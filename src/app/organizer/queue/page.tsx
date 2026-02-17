@@ -5,7 +5,7 @@ import DashboardLayout from '@/components/DashboardLayout';
 import { useLanguage } from '@/context/LanguageContext';
 import { Search, Loader2, QrCode, ArrowRight, Warehouse, Thermometer, Droplets, Sprout, Wind } from 'lucide-react';
 
-const API_BASE = 'http://localhost:5000/api';
+import { API_BASE } from '@/lib/firebase';
 
 type OrderItem = {
     id: string;
