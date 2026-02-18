@@ -15,6 +15,44 @@ import json
 import os
 import uuid
 from datetime import datetime, timedelta
+import urllib.request
+import urllib.error
+
+
+# ─────────────────────────────────────────────
+#  AUTO MODE HELPER
+# ─────────────────────────────────────────────
+def run_auto_control(hub_id, hub):
+    """Background auto-control: check temp/moisture and actuate heater/fan."""
+    device_ip = hub.get('device_ip')
+    if not device_ip:
+        return
+
+    temp = hub.get('temperature', 25)
+    moisture = hub.get('moisture', 50)
+    current_heater = hub.get('device_state', 'OFF')
+    current_fan = hub.get('servo_state', 'OFF')
+
+    # Moisture not optimal (<35%) -> heater ON, optimal (35-80%) -> heater OFF
+    desired_heater = 'ON' if moisture < 35 else 'OFF' if moisture <= 80 else current_heater
+    # Temperature not optimal (>35°C) -> fan ON, normal (10-35°C) -> fan OFF
+    desired_fan = 'ON' if temp > 35 else 'OFF' if temp >= 10 else current_fan
+
+    try:
+        # Only send commands when state needs to change
+        if desired_heater != current_heater:
+            url = f"http://{device_ip}/toggle?state={'on' if desired_heater == 'ON' else 'off'}"
+            req = urllib.request.Request(url)
+            urllib.request.urlopen(req, timeout=2)
+            hub['device_state'] = desired_heater
+
+        if desired_fan != current_fan:
+            url = f"http://{device_ip}/servo?state={'on' if desired_fan == 'ON' else 'off'}"
+            req = urllib.request.Request(url)
+            urllib.request.urlopen(req, timeout=2)
+            hub['servo_state'] = desired_fan
+    except Exception as e:
+        print(f"[AUTO] Control error for {hub_id}: {e}")
 
 # ─────────────────────────────────────────────
 #  FIREBASE ADMIN SDK INIT
@@ -595,6 +633,19 @@ def ingest_hub_sensor_data(hub_id):
     
     hub['last_updated'] = datetime.now().isoformat()
     hub['status'] = 'online'
+
+    # Save device IP for remote toggle (valid for 30 min)
+    if 'device_ip' in data:
+        hub['device_ip'] = str(data['device_ip'])
+        hub['device_ip_updated'] = datetime.now().isoformat()
+
+    # Save pin/device state reported by the ESP32
+    if 'pin_state' in data:
+        hub['device_state'] = str(data['pin_state']).upper()
+
+    # Save servo state reported by the ESP32
+    if 'servo_state' in data:
+        hub['servo_state'] = str(data['servo_state']).upper()
     
     # Record to local history
     if hub_id not in hub_sensor_history:
@@ -607,10 +658,16 @@ def ingest_hub_sensor_data(hub_id):
     if len(hub_sensor_history[hub_id]) > 100:
         hub_sensor_history[hub_id] = hub_sensor_history[hub_id][-100:]
     
+    # Auto mode: check thresholds and actuate in background thread
+    if hub.get('auto_mode'):
+        t = threading.Thread(target=run_auto_control, args=(hub_id, hub), daemon=True)
+        t.start()
+    
     return jsonify({
         "hub_id": hub_id,
         "temperature": hub['temperature'],
         "moisture": hub['moisture'],
+        "auto_mode": hub.get('auto_mode', False),
         "message": "Sensor data updated",
         "timestamp": datetime.now().isoformat()
     })
@@ -629,6 +686,128 @@ def get_hub_sensor_history(hub_id):
         "hub_id": hub_id,
         "history": history,
         "timestamp": datetime.now().isoformat()
+    })
+
+
+@app.route('/api/hubs/<hub_id>/toggle', methods=['POST'])
+def toggle_hub_device(hub_id):
+    """
+    Send an ON/OFF command to the hub's connected ESP32 device.
+    The device IP is obtained from sensor check-ins (valid for 30 min).
+    Expects JSON: { "state": "on" } or { "state": "off" }
+    """
+    if hub_id not in hubs_data:
+        return jsonify({"error": f"Hub '{hub_id}' not found"}), 404
+
+    hub = hubs_data[hub_id]
+    device_ip = hub.get('device_ip')
+
+    if not device_ip:
+        return jsonify({"error": "No device connected to this hub"}), 400
+
+    # Check if IP is stale (device sends every 1s, so 15s = offline)
+    ip_updated = hub.get('device_ip_updated')
+    if ip_updated:
+        try:
+            updated_time = datetime.fromisoformat(ip_updated)
+            if (datetime.now() - updated_time).total_seconds() > 15:
+                return jsonify({"error": "Device is offline (no data received in 15s)"}), 400
+        except Exception:
+            pass
+
+    req_data = request.get_json() or {}
+    state = req_data.get('state', 'toggle').lower()
+
+    try:
+        url = f"http://{device_ip}/toggle?state={state}"
+        req = urllib.request.Request(url)
+        response = urllib.request.urlopen(req, timeout=3)
+        result = response.read().decode().strip()
+
+        # Update stored state
+        hub['device_state'] = result
+
+        return jsonify({
+            "hub_id": hub_id,
+            "device_ip": device_ip,
+            "state": result,
+            "message": f"Device set to {result}"
+        })
+    except urllib.error.URLError as e:
+        return jsonify({"error": f"Could not reach device at {device_ip}: {str(e)}"}), 502
+    except Exception as e:
+        return jsonify({"error": f"Toggle failed: {str(e)}"}), 500
+
+
+@app.route('/api/hubs/<hub_id>/servo', methods=['POST'])
+def servo_hub_device(hub_id):
+    """
+    Send a servo ON/OFF command to the hub's connected ESP32 device.
+    ON = continuous rotation, OFF = stop.
+    Expects JSON: { "state": "on" } or { "state": "off" }
+    """
+    if hub_id not in hubs_data:
+        return jsonify({"error": f"Hub '{hub_id}' not found"}), 404
+
+    hub = hubs_data[hub_id]
+    device_ip = hub.get('device_ip')
+
+    if not device_ip:
+        return jsonify({"error": "No device connected to this hub"}), 400
+
+    # Check if device is online
+    ip_updated = hub.get('device_ip_updated')
+    if ip_updated:
+        try:
+            updated_time = datetime.fromisoformat(ip_updated)
+            if (datetime.now() - updated_time).total_seconds() > 15:
+                return jsonify({"error": "Device is offline (no data received in 15s)"}), 400
+        except Exception:
+            pass
+
+    req_data = request.get_json() or {}
+    state = req_data.get('state', 'toggle').lower()
+
+    try:
+        url = f"http://{device_ip}/servo?state={state}"
+        req = urllib.request.Request(url)
+        response = urllib.request.urlopen(req, timeout=3)
+        result = response.read().decode().strip()
+
+        hub['servo_state'] = result
+
+        return jsonify({
+            "hub_id": hub_id,
+            "device_ip": device_ip,
+            "state": result,
+            "message": f"Servo set to {result}"
+        })
+    except urllib.error.URLError as e:
+        return jsonify({"error": f"Could not reach device at {device_ip}: {str(e)}"}), 502
+    except Exception as e:
+        return jsonify({"error": f"Servo control failed: {str(e)}"}), 500
+
+
+@app.route('/api/hubs/<hub_id>/auto', methods=['POST'])
+def toggle_auto_mode(hub_id):
+    """
+    Enable or disable auto mode for a hub.
+    When auto mode is on, heater and fan are controlled automatically:
+      - Moisture < 35% -> heater ON, 35-80% -> heater OFF
+      - Temperature > 35°C -> fan ON, 10-35°C -> fan OFF
+    Expects JSON: { "enabled": true/false }
+    """
+    if hub_id not in hubs_data:
+        return jsonify({"error": f"Hub '{hub_id}' not found"}), 404
+
+    hub = hubs_data[hub_id]
+    req_data = request.get_json() or {}
+    hub['auto_mode'] = bool(req_data.get('enabled', not hub.get('auto_mode', False)))
+
+    return jsonify({
+        "hub_id": hub_id,
+        "auto_mode": hub['auto_mode'],
+        "message": f"Auto mode {'enabled' if hub['auto_mode'] else 'disabled'}"
     })
 
 
