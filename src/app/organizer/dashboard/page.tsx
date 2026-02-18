@@ -130,7 +130,7 @@ export default function OrganizerDashboard() {
 
     useEffect(() => {
         fetchData();
-        const interval = setInterval(fetchData, 5000);
+        const interval = setInterval(fetchData, 3000);
         return () => clearInterval(interval);
     }, [fetchData]);
 
@@ -259,7 +259,7 @@ export default function OrganizerDashboard() {
                             </div>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                                 <Signal size={14} color="var(--success)" />
-                                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--success)' }}>Live • 5s polling</span>
+                                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--success)' }}>Live • 3s polling</span>
                             </div>
                         </div>
 

@@ -1,67 +1,106 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <DHT.h>
+#include <WebServer.h>
 
 // WiFi Credentials
-const char* ssid = "Tenda_938F28";
-const char* password = "sambhu123";
+const char* ssid = "SJCCAMPUS";
+const char* password = "wireless@sjcet2011";
 
-// Server Endpoint
-const char* serverName = "http://192.168.1.11:5000/api/hubs/HUB-19961A/sensors";
+// API Endpoint
+const char* serverName = "http://api.sambhu.design/api/hubs/HUB-3362B8/sensors";
 
-// DHT11 Setup
-#define DHTPIN 4      // Digital pin connected to the DHT sensor
-#define DHTTYPE DHT11 // DHT 11
+// Pin Definitions
+#define DHTPIN 4
+#define DHTTYPE DHT11
+#define CONTROL_PIN 22
+
 DHT dht(DHTPIN, DHTTYPE);
+WebServer server(80);
 
-void setup() {
-  Serial.begin(115200);
-  dht.begin();
+bool pinState = LOW;
+TaskHandle_t SensorTask;
 
-  // Connect to WiFi
+// ---------- TOGGLE HANDLER ----------
+void handleToggle() {
+  pinState = !pinState;
+  digitalWrite(CONTROL_PIN, pinState);
+  server.send(200, "text/plain", pinState ? "ON" : "OFF");
+  Serial.println("Toggle Triggered");
+}
+
+// ---------- SENSOR TASK (Core 0) ----------
+void sensorTaskCode(void * parameter) {
+  HTTPClient http;
+  
+  while(true) {
+    if(WiFi.status() == WL_CONNECTED) {
+      float h = dht.readHumidity();
+      float t = dht.readTemperature();
+
+      if(!isnan(h) && !isnan(t)) {
+        // Reuse the connection to speed up the 1-second interval
+        http.begin(serverName); 
+        http.addHeader("Content-Type", "application/json");
+        http.setTimeout(900); // Must be less than 1000ms since we loop every second
+
+        String data = "{\"temperature\":" + String(t) + ",\"moisture\":" + String(h) + "}";
+
+        // Send POST request
+        int httpResponseCode = http.POST(data);
+        
+        if (httpResponseCode > 0) {
+          Serial.printf("[%lu] Sent: %s | Status: %d\n", millis(), data.c_str(), httpResponseCode);
+        } else {
+          Serial.print("Error: ");
+          Serial.println(http.errorToString(httpResponseCode).c_str());
+        }
+
+        http.end();
+      }
+    } else {
+      Serial.println("WiFi Lost");
+    }
+
+    // High-frequency 1-second delay
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+  }
+}
+
+// ---------- WIFI SETUP ----------
+void connectWiFi() {
+  Serial.print("Connecting");
   WiFi.begin(ssid, password);
-  Serial.print("Connecting to WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
+  while(WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("\nConnected to WiFi");
+  Serial.println("\nConnected! IP: " + WiFi.localIP().toString());
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(CONTROL_PIN, OUTPUT);
+  dht.begin();
+  
+  connectWiFi();
+
+  server.on("/toggle", handleToggle);
+  server.begin();
+
+  // Start the background task
+  xTaskCreatePinnedToCore(
+    sensorTaskCode,
+    "SensorTask",
+    10000,
+    NULL,
+    1,
+    &SensorTask,
+    0
+  );
 }
 
 void loop() {
-  // Wait a few seconds between measurements
-  delay(10000); 
-
-  float h = dht.readHumidity();
-  float t = dht.readTemperature();
-
-  // Check if any reads failed
-  if (isnan(h) || isnan(t)) {
-    Serial.println("Failed to read from DHT sensor!");
-    return;
-  }
-
-  if(WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    http.begin(serverName);
-    http.addHeader("Content-Type", "application/json");
-
-    // Prepare JSON payload
-    String httpRequestData = "{\"temperature\": " + String(t) + ", \"moisture\": " + String(h) + "}";
-    
-    // Send POST request
-    int httpResponseCode = http.POST(httpRequestData);
-
-    if (httpResponseCode > 0) {
-      Serial.print("HTTP Response code: ");
-      Serial.println(httpResponseCode);
-    } else {
-      Serial.print("Error code: ");
-      Serial.println(httpResponseCode);
-    }
-    
-    http.end();
-  } else {
-    Serial.println("WiFi Disconnected");
-  }
+  server.handleClient();
+  delay(1); 
 }
