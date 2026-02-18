@@ -836,12 +836,7 @@
                 </svg>
                 Organizers
             </button>
-            <button class="nav-item" data-tab="sensors">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M14 4v10.54a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0Z"></path>
-                </svg>
-                Global Sensors
-            </button>
+
         </nav>
         <div class="sidebar-footer">
             <div class="sidebar-user">
@@ -909,20 +904,7 @@
                 <div class="card" style="padding:0;overflow:hidden" id="organizersTable"></div>
             </div>
 
-            <!-- GLOBAL SENSORS TAB -->
-            <div class="tab-content" id="tab-sensors">
-                <div style="margin-bottom:2rem">
-                    <h1 style="font-size:1.75rem;font-weight:900">Global <span
-                            style="color:var(--primary)">Sensors.</span></h1>
-                    <p style="color:var(--text-muted);font-size:0.9rem">Environment sensor controls for the main
-                        station.</p>
-                </div>
-                <div style="display:flex;gap:0.75rem;margin-bottom:1.5rem">
-                    <button class="btn btn-primary" onclick="saveAllSensors()">💾 Save All</button>
-                    <button class="btn btn-ghost" onclick="randomizeSensors()">🎲 Randomize</button>
-                </div>
-                <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:1rem" id="sensorGrid"></div>
-            </div>
+
         </div>
     </div>
 
@@ -977,7 +959,7 @@
                 btn.classList.add('active');
                 const tab = btn.dataset.tab;
                 document.getElementById('tab-' + tab).classList.add('active');
-                const titles = { overview: 'System Overview', hubs: 'Sensor Hubs', organizers: 'Organizers', sensors: 'Global Sensors' };
+                const titles = { overview: 'System Overview', hubs: 'Sensor Hubs', organizers: 'Organizers' };
                 document.getElementById('pageTitle').textContent = titles[tab] || 'Dashboard';
             });
         });
@@ -1024,7 +1006,6 @@
             renderHubs('hubGrid');
             renderHubs('hubGridFull');
             renderOrganizers();
-            renderSensors();
         }
 
         function renderStats() {
@@ -1036,7 +1017,7 @@
                 { label: 'Total Users', value: adminStats.total_users || 0, sub: 'All registered accounts', icon: '🌐', bg: '', dark: true },
             ];
             g.innerHTML = items.map(s => `
-        <div class="card stat-card ${s.dark ? 'stat-dark' : ''} fade-up">
+        <div class="card stat-card ${s.dark ? 'stat-dark' : ''}">
             <div class="stat-card-header">
                 <span class="stat-label">${s.label}</span>
                 <div class="stat-icon" style="background:${s.dark ? 'rgba(255,255,255,0.08)' : s.bg}">${s.icon}</div>
@@ -1059,7 +1040,7 @@
                 const moistColor = h.moisture < 30 ? 'var(--error)' : h.moisture < 50 ? 'var(--warning)' : 'var(--primary)';
                 const updated = h.last_updated ? new Date(h.last_updated).toLocaleTimeString() : '--';
                 return `
-        <div class="card hub-card fade-up">
+        <div class="card hub-card">
             <div class="hub-header">
                 <span class="hub-name">${h.name}</span>
                 <span class="hub-id">${h.id}</span>
@@ -1107,59 +1088,7 @@
             c.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>UID</th><th>Joined</th></tr></thead><tbody>${rows}</tbody></table></div>`;
         }
 
-        function renderSensors() {
-            const g = document.getElementById('sensorGrid');
-            g.innerHTML = '';
-            for (const [key, value] of Object.entries(sensorData)) {
-                const meta = SENSOR_META[key] || { icon: '📡', unit: '', color: '#059669' };
-                const label = key.replace(/_/g, ' ');
-                g.innerHTML += `
-        <div class="card fade-up" style="padding:1.25rem">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem">
-                <span style="font-size:1.25rem">${meta.icon}</span>
-                <span style="font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-soft)">${label}</span>
-            </div>
-            <div style="font-family:'JetBrains Mono',monospace;font-size:1.5rem;font-weight:800;color:var(--secondary);margin-bottom:0.75rem">${typeof value === 'number' ? value.toFixed(1) : value} <span style="font-size:0.75rem;color:var(--text-soft);font-weight:600">${meta.unit}</span></div>
-            <div style="display:flex;gap:0.375rem">
-                <input type="number" id="input-${key}" value="${value}" step="0.1" style="flex:1;padding:0.375rem 0.5rem;border:1.5px solid var(--border);border-radius:8px;font-family:'JetBrains Mono',monospace;font-size:0.8rem;font-weight:600;color:var(--text-main);outline:none;background:white">
-                <button class="btn btn-primary btn-sm" onclick="updateSensor('${key}')">Set</button>
-            </div>
-        </div>`;
-            }
-        }
 
-        async function updateSensor(key) {
-            const val = parseFloat(document.getElementById('input-' + key).value);
-            try {
-                await fetch(API + `/api/sensors/${key}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: val }) });
-                sensorData[key] = val;
-                renderSensors();
-                showToast(`${key.replace(/_/g, ' ')} updated to ${val}`);
-            } catch (e) { showToast('Error updating sensor'); }
-        }
-
-        async function saveAllSensors() {
-            const updates = {};
-            for (const key of Object.keys(sensorData)) {
-                const inp = document.getElementById('input-' + key);
-                if (inp) updates[key] = parseFloat(inp.value);
-            }
-            try {
-                await fetch(API + '/api/sensors', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates) });
-                await fetchAll();
-                showToast('All sensors updated!');
-            } catch (e) { showToast('Error saving sensors'); }
-        }
-
-        function randomizeSensors() {
-            const ranges = { temperature: [15, 45], humidity: [20, 95], soil_moisture: [10, 80], light_intensity: [100, 1200], ph_level: [4, 9], wind_speed: [0, 60], rainfall: [0, 50], co2_level: [300, 800], pressure: [980, 1040], uv_index: [0, 11] };
-            for (const key of Object.keys(sensorData)) {
-                const [min, max] = ranges[key] || [0, 100];
-                const inp = document.getElementById('input-' + key);
-                if (inp) inp.value = (Math.random() * (max - min) + min).toFixed(1);
-            }
-            showToast('Randomized — click Save All to apply');
-        }
 
         async function createHub() {
             const name = document.getElementById('newHubName').value.trim();
@@ -1195,7 +1124,7 @@
         }
 
         fetchAll();
-        setInterval(fetchAll, 5000);
+        setInterval(fetchAll, 10000);
     </script>
 </body>
 
