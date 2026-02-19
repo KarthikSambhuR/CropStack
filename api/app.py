@@ -415,6 +415,31 @@ def get_all_profiles_from_firestore():
 #  ADMIN DASHBOARD ROUTES
 # ─────────────────────────────────────────────
 
+
+def get_collaterals_from_firestore():
+    """Fetch all collateral records from Firestore."""
+    if not firestore_db:
+        return []
+    try:
+        collaterals_ref = firestore_db.collection('collaterals')
+        docs = collaterals_ref.stream()
+        collaterals = []
+        for doc in docs:
+            data = doc.to_dict()
+            data['id'] = doc.id
+            collaterals.append(data)
+        # Sort by created_at descending
+        collaterals.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+        return collaterals
+    except Exception as e:
+        print(f"Error fetching collaterals: {e}")
+        return []
+
+
+# ─────────────────────────────────────────────
+#  ADMIN DASHBOARD ROUTES
+# ─────────────────────────────────────────────
+
 @app.route('/')
 def index():
     """Redirect to login or dashboard."""
@@ -834,6 +859,11 @@ def api_get_admin_stats():
     """Get admin dashboard stats — combines Firestore data with local hub data."""
     organizers = get_organizers_from_firestore()
     all_profiles = get_all_profiles_from_firestore()
+    collaterals = get_collaterals_from_firestore()
+    
+    # Filter profiles by role
+    buyers = [p for p in all_profiles if p.get('role') == 'buyer']
+    sellers = [p for p in all_profiles if p.get('role') == 'seller']
     
     # Count by role
     role_counts = {}
@@ -845,12 +875,57 @@ def api_get_admin_stats():
         "total_hubs": len(hubs_data),
         "hubs_online": sum(1 for h in hubs_data.values() if h.get('status') == 'online'),
         "total_organizers": len(organizers),
+        "total_buyers": len(buyers),
+        "total_sellers": len(sellers),
         "total_users": len(all_profiles),
         "role_counts": role_counts,
         "hubs": list(hubs_data.values()),
         "organizers": organizers,
+        "buyers": buyers,
+        "sellers": sellers,
+        "orders": orders_data,
+        "transactions": transactions_data,
+        "collaterals": collaterals,
         "timestamp": datetime.now().isoformat()
     })
+
+
+# ─────────────────────────────────────────────
+#  COLLATERAL APPROVAL ENDPOINT
+# ─────────────────────────────────────────────
+
+@app.route('/api/admin/collaterals/<doc_id>/approve', methods=['POST'])
+def approve_collateral(doc_id):
+    """Approve or reject a loan collateral — updates status in Firestore."""
+    if not firestore_db:
+        return jsonify({"error": "Firestore not available"}), 500
+
+    data = request.get_json() or {}
+    new_status = data.get('status', 'verified')
+
+    allowed = {'verified', 'active', 'released', 'defaulted', 'pending'}
+    if new_status not in allowed:
+        return jsonify({"error": f"Invalid status. Must be one of: {', '.join(allowed)}"}), 400
+
+    try:
+        doc_ref = firestore_db.collection('collaterals').document(doc_id)
+        doc = doc_ref.get()
+        if not doc.exists:
+            return jsonify({"error": "Collateral not found"}), 404
+
+        doc_ref.update({
+            'status': new_status,
+            'approved_at': datetime.now().isoformat() if new_status == 'verified' else None,
+        })
+
+        return jsonify({
+            "message": f"Collateral {doc_id} status updated to '{new_status}'",
+            "doc_id": doc_id,
+            "status": new_status,
+            "timestamp": datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({"error": f"Failed to update collateral: {str(e)}"}), 500
 
 
 # ─────────────────────────────────────────────

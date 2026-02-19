@@ -21,6 +21,26 @@ export type Product = {
   quantity_available: number;
   image_url: string | null;
   is_active: boolean;
+  is_collateral?: boolean;
+  loan_amount?: number;
+  created_at: string;
+};
+
+export type Collateral = {
+  id: string;
+  collateral_id: string; // unique verification ID (e.g. "COL-XXXXXXXX")
+  seller_id: string;
+  seller_name: string;
+  seller_email: string;
+  product_id: string;
+  crop_name: string;
+  crop_category: string;
+  crop_quantity: number;
+  crop_unit: string;
+  crop_price_per_unit: number;
+  crop_total_value: number;
+  loan_amount_requested: number;
+  status: 'pending' | 'verified' | 'active' | 'released' | 'defaulted';
   created_at: string;
 };
 

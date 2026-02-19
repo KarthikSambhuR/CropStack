@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit Hub — CropStack Admin</title>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800;900&family=Instrument+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
+        rel="stylesheet">
+    <style>
+        :root {
+            --primary: #059669;
+            --primary-hover: #047857;
+            --primary-soft: #ecfdf5;
+            --secondary: #0f172a;
+            --bg-main: #f8fafc;
+            --bg-surface: #ffffff;
+            --text-main: #111827;
+            --text-muted: #475569;
+            --text-soft: #94a3b8;
+            --border: #e2e8f0;
+            --border-soft: #f1f5f9;
+            --success: #10b981;
+            --shadow-lg: 0 20px 25px -5px rgb(0 0 0 / 0.1);
+            --radius-md: 14px;
+            --radius-lg: 24px;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background: var(--bg-main);
+            background-image: radial-gradient(circle at 2px 2px, #e2e8f0 1px, transparent 0);
+            background-size: 40px 40px;
+            color: var(--text-main);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            padding: 2rem;
+        }
+
+        .edit-card {
+            background: white;
+            border-radius: var(--radius-lg);
+            padding: 3rem;
+            width: 100%;
+            max-width: 540px;
+            box-shadow: var(--shadow-lg);
+            border: 1px solid var(--border);
+            animation: fadeUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+
+        @keyframes fadeUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .header {
+            margin-bottom: 2.5rem;
+            text-align: center;
+        }
+
+        .hub-icon {
+            width: 64px;
+            height: 64px;
+            background: var(--primary-soft);
+            color: var(--primary);
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2rem;
+            margin: 0 auto 1.5rem;
+            box-shadow: 0 8px 16px rgba(5, 150, 105, 0.15);
+        }
+
+        h1 {
+            font-family: 'Instrument Sans', sans-serif;
+            font-size: 2rem;
+            font-weight: 800;
+            letter-spacing: -0.04em;
+            color: var(--secondary);
+            margin-bottom: 0.5rem;
+        }
+
+        .hub-meta {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            font-weight: 500;
+        }
+
+        .hub-id-badge {
+            font-family: 'JetBrains Mono', monospace;
+            background: var(--secondary);
+            color: white;
+            padding: 0.25rem 0.75rem;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            letter-spacing: 0.05em;
+            margin-left: 0.5rem;
+        }
+
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+
+        .label {
+            display: block;
+            font-size: 0.75rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-soft);
+            margin-bottom: 0.75rem;
+        }
+
+        .input-wrapper {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        .input-icon {
+            position: absolute;
+            left: 1.25rem;
+            font-size: 1.25rem;
+        }
+
+        input {
+            width: 100%;
+            padding: 1rem 1.25rem 1rem 3.5rem;
+            border-radius: var(--radius-md);
+            border: 2px solid var(--border-soft);
+            background: var(--bg-main);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: var(--secondary);
+            transition: all 0.25s;
+            outline: none;
+        }
+
+        input:focus {
+            border-color: var(--primary);
+            background: white;
+            box-shadow: 0 0 0 4px rgba(5, 150, 105, 0.1);
+        }
+
+        .unit {
+            position: absolute;
+            right: 1.25rem;
+            font-weight: 800;
+            color: var(--text-soft);
+            font-size: 0.9rem;
+        }
+
+        .actions {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 1rem;
+            margin-top: 2.5rem;
+        }
+
+        .btn {
+            padding: 1rem;
+            border-radius: 14px;
+            font-size: 0.95rem;
+            font-weight: 800;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            text-decoration: none;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            border: none;
+        }
+
+        .btn-ghost {
+            background: var(--bg-main);
+            color: var(--text-muted);
+            border: 1px solid var(--border);
+        }
+
+        .btn-ghost:hover {
+            background: white;
+            color: var(--secondary);
+            border-color: var(--secondary);
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+            box-shadow: 0 8px 20px rgba(5, 150, 105, 0.25);
+        }
+
+        .btn-primary:hover {
+            background: var(--primary-hover);
+            transform: translateY(-2px);
+            box-shadow: 0 12px 24px rgba(5, 150, 105, 0.3);
+        }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            background: white;
+            border: 1px solid rgba(5, 150, 105, 0.2);
+            border-radius: 14px;
+            padding: 1rem 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
+            transform: translateY(100px);
+            opacity: 0;
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            z-index: 1000;
+        }
+
+        .toast.show {
+            transform: translateY(0);
+            opacity: 1;
+        }
+
+        .toast-icon {
+            width: 32px;
+            height: 32px;
+            background: var(--primary-soft);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="edit-card">
+        <div class="header">
+            <div class="hub-icon">📡</div>
+            <h1>Update Hub Data.</h1>
+            <p class="hub-meta">
+                Setting manual override for <strong>{{ hub.name }}</strong>
+                <span class="hub-id-badge">{{ hub.id }}</span>
+            </p>
+        </div>
+
+        <div class="form-group">
+            <label class="label">Temperature Override</label>
+            <div class="input-wrapper">
+                <span class="input-icon">🌡️</span>
+                <input type="number" id="temperature" value="{{ hub.temperature }}" step="0.1">
+                <span class="unit">° Celsius</span>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label class="label">Moisture Level</label>
+            <div class="input-wrapper">
+                <span class="input-icon">💧</span>
+                <input type="number" id="moisture" value="{{ hub.moisture }}" step="0.1">
+                <span class="unit">% Relative</span>
+            </div>
+        </div>
+
+        <div class="actions">
+            <a href="/admin/dashboard" class="btn btn-ghost">Cancel</a>
+            <button class="btn btn-primary" onclick="saveData()">💾 Save Sensor Data</button>
+        </div>
+    </div>
+
+    <div class="toast" id="toast">
+        <div class="toast-icon">✅</div>
+        <div class="toast-text" id="toastText">Hub sensors updated!</div>
+    </div>
+
+    <script>
+        async function saveData() {
+            const temp = parseFloat(document.getElementById('temperature').value);
+            const moist = parseFloat(document.getElementById('moisture').value);
+            const hubId = "{{ hub.id }}";
+
+            try {
+                const response = await fetch(`/admin/hubs/${hubId}/update-sensors`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        temperature: temp,
+                        moisture: moist
+                    })
+                });
+
+                if (response.ok) {
+                    showToast("Hub sensors updated successfully!");
+                    setTimeout(() => {
+                        window.location.href = "/admin/dashboard";
+                    }, 1000);
+                } else {
+                    showToast("Error updating sensors");
+                }
+            } catch (err) {
+                console.error(err);
+                showToast("Network error occurred");
+            }
+        }
+
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            document.getElementById('toastText').textContent = msg;
+            t.classList.add('show');
+            setTimeout(() => t.classList.remove('show'), 2500);
+        }
+    </script>
+</body>
+
+</html>

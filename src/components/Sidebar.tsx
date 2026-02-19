@@ -17,7 +17,8 @@ import {
     ChevronRight,
     Bell,
     Database,
-    Clock
+    Clock,
+    Landmark
 } from 'lucide-react';
 import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
@@ -41,6 +42,7 @@ export default function Sidebar({ role }: SidebarProps) {
         { name: t('dashboard'), href: '/seller/dashboard', icon: LayoutDashboard },
         { name: t('products'), href: '/seller/products', icon: Package },
         { name: t('inventory'), href: '/seller/products/new', icon: PlusCircle },
+        { name: 'My Loans', href: '/seller/loans', icon: Landmark },
     ];
 
     const organizerLinks = [

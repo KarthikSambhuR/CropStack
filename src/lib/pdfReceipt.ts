@@ -630,3 +630,201 @@ export function generatePaymentHistoryPdf(data: PaymentHistoryData) {
     drawFooter(doc, margin, pageW, pageH);
     doc.save(`CropStack-PaymentHistory-${new Date().toISOString().slice(0, 10)}.pdf`);
 }
+
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 4. COLLATERAL RECEIPT
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+export interface CollateralReceiptData {
+    collateralId: string;
+    sellerName: string;
+    sellerEmail: string;
+    cropName: string;
+    cropCategory: string;
+    cropQuantity: number;
+    cropUnit: string;
+    cropPricePerUnit: number;
+    cropTotalValue: number;
+    loanAmountRequested: number;
+    date: string;
+    currencySymbol: string;
+}
+
+const INDIGO = [99, 102, 241]; // #6366f1
+
+export function generateCollateralReceiptPdf(data: CollateralReceiptData, action: 'download' | 'print' = 'download') {
+    const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+    const pageW = doc.internal.pageSize.getWidth();
+    const margin = 20;
+    const contentW = pageW - margin * 2;
+    let y = margin;
+
+    // ─ 1. Header (Company & Logo) ───────────────────────────────────────
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(14);
+    setColor(doc, BRAND_DARK);
+    doc.text('CropStack Inc.', margin, y);
+    y += 6;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    setColor(doc, TEXT_SOFT);
+    doc.text('Collateral & Loan Division', margin, y);
+    y += 4.5;
+    doc.text('Agri-Tech Zone, IN 560001', margin, y);
+
+    const logoW = 60;
+    const logoH = 18;
+    roundedRect(doc, margin + contentW - logoW, margin - 2, logoW, logoH, 2, WHITE, BORDER);
+    doc.setFontSize(10);
+    setColor(doc, BRAND_GREEN);
+    doc.setFont('helvetica', 'bold');
+    doc.text('🌾 CropStack', margin + contentW - (logoW / 2), margin + (logoH / 2), { align: 'center' });
+
+    y = margin + 35;
+
+    // ─ 2. Title ──────────────────────────────────────────────────────────
+    doc.setFontSize(28);
+    doc.setFont('times', 'bold');
+    setColor(doc, BRAND_DARK);
+    doc.text('COLLATERAL CERTIFICATE', margin + contentW, y, { align: 'right' });
+
+    y += 15;
+
+    // ─ 3. Collateral ID Highlight ────────────────────────────────────────
+    roundedRect(doc, margin, y, contentW, 22, 3, [240, 240, 255], INDIGO);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    setColor(doc, INDIGO);
+    doc.text('COLLATERAL VERIFICATION ID', margin + 8, y + 8);
+    doc.setFontSize(18);
+    doc.text(data.collateralId, margin + 8, y + 18);
+
+    // Verification URL on right
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    setColor(doc, TEXT_SOFT);
+    doc.text('Verify at: cropstack.app/collateral/verify', margin + contentW - 8, y + 18, { align: 'right' });
+
+    y += 32;
+
+    // ─ 4. Applicant Info ─────────────────────────────────────────────────
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    setColor(doc, INDIGO);
+    doc.text('Applicant Details', margin, y);
+    y += 8;
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+
+    const infoRows = [
+        ['Full Name', data.sellerName],
+        ['Email', data.sellerEmail],
+        ['Date of Pledge', formatDate(data.date)],
+        ['Time', formatTime(data.date)],
+    ];
+
+    infoRows.forEach(([label, value]) => {
+        setColor(doc, TEXT_SOFT);
+        doc.text(label, margin + 4, y);
+        setColor(doc, BRAND_DARK);
+        doc.setFont('helvetica', 'bold');
+        doc.text(value, margin + 55, y);
+        doc.setFont('helvetica', 'normal');
+        y += 6;
+    });
+
+    y += 6;
+    drawDashedHr(doc, y, margin, contentW);
+    y += 10;
+
+    // ─ 5. Crop / Collateral Details Table ────────────────────────────────
+    const tableHeaderY = y;
+    const tableH = 10;
+    doc.setFillColor(BRAND_DARK[0], BRAND_DARK[1], BRAND_DARK[2]);
+    doc.rect(margin, tableHeaderY, contentW, tableH, 'F');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.5);
+    doc.setTextColor(255, 255, 255);
+    doc.text('CROP', margin + 5, tableHeaderY + 6.5);
+    doc.text('CATEGORY', margin + 55, tableHeaderY + 6.5);
+    doc.text('QTY', margin + 95, tableHeaderY + 6.5);
+    doc.text('RATE', margin + 120, tableHeaderY + 6.5);
+    doc.text('TOTAL VALUE', margin + contentW - 5, tableHeaderY + 6.5, { align: 'right' });
+
+    y += tableH + 8;
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    setColor(doc, BRAND_DARK);
+    doc.text(data.cropName, margin + 5, y);
+    doc.text(data.cropCategory, margin + 55, y);
+    doc.text(`${data.cropQuantity} ${data.cropUnit}`, margin + 95, y);
+    doc.text(`${data.currencySymbol}${data.cropPricePerUnit.toFixed(2)}`, margin + 120, y);
+    doc.setFont('helvetica', 'bold');
+    doc.text(`${data.currencySymbol}${data.cropTotalValue.toFixed(2)}`, margin + contentW - 5, y, { align: 'right' });
+
+    y += 10;
+    drawHr(doc, y, margin, contentW);
+    y += 12;
+
+    // ─ 6. Loan Summary ──────────────────────────────────────────────────
+    const summaryX = margin + contentW - 90;
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+    setColor(doc, TEXT_SOFT);
+    doc.text('Crop Total Value', summaryX, y);
+    setColor(doc, BRAND_DARK);
+    doc.text(`${data.currencySymbol}${data.cropTotalValue.toFixed(2)}`, margin + contentW - 5, y, { align: 'right' });
+
+    y += 8;
+    doc.setDrawColor(INDIGO[0], INDIGO[1], INDIGO[2]);
+    doc.setLineWidth(0.5);
+    doc.line(summaryX, y - 4, margin + contentW, y - 4);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    setColor(doc, INDIGO);
+    doc.text('Loan Amount Requested', summaryX, y + 2);
+    doc.setFontSize(14);
+    doc.text(`${data.currencySymbol}${data.loanAmountRequested.toFixed(2)}`, margin + contentW - 5, y + 2, { align: 'right' });
+
+    doc.line(summaryX, y + 8, margin + contentW, y + 8);
+
+    y += 28;
+
+    // ─ 7. Terms & Notes ─────────────────────────────────────────────────
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    setColor(doc, INDIGO);
+    doc.text('Important Information', margin, y);
+    y += 7;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8.5);
+    setColor(doc, TEXT_SOFT);
+    const notes = [
+        'This crop has been pledged as collateral and is NOT listed on the CropStack marketplace.',
+        'The bank or financial institution can verify this collateral by visiting cropstack.app/collateral/verify',
+        `and entering the Collateral ID: ${data.collateralId}`,
+        'The crop will remain locked as collateral until the loan is fully settled or released.',
+        'For any disputes or queries, contact support@cropstack.app with your Collateral ID.',
+    ];
+    notes.forEach(note => {
+        doc.text('•  ' + note, margin + 4, y);
+        y += 5;
+    });
+
+    // Footer
+    doc.setFontSize(7);
+    setColor(doc, TEXT_MUTED);
+    doc.text('Digitally generated by CropStack Collateral & Loan Division', pageW / 2, 285, { align: 'center' });
+
+    if (action === 'print') {
+        doc.autoPrint();
+        window.open(doc.output('bloburl'), '_blank');
+    } else {
+        doc.save(`CropStack-Collateral-${data.collateralId}.pdf`);
+    }
+}
