@@ -151,7 +151,7 @@ export default function Catalog() {
                                         </div>
                                         <div style={{ textAlign: 'right' }}>
                                             <p style={{ fontSize: '1.25rem', fontWeight: 800, color: 'var(--secondary)', lineHeight: 1 }}>{t('currency_symbol')}{product.price_per_unit}</p>
-                                            <p style={{ fontSize: '0.7rem', color: 'var(--text-soft)', fontWeight: 600 }}>{t('price_per')} {t('unit_q')}</p>
+                                            <p style={{ fontSize: '0.7rem', color: 'var(--text-soft)', fontWeight: 600 }}>{t('price_per')} {product.unit}</p>
                                         </div>
                                     </div>
 
@@ -160,7 +160,7 @@ export default function Catalog() {
                                             <Warehouse size={16} color="var(--primary)" /> Slot ID: {product.id.slice(0, 6).toUpperCase()}
                                         </div>
                                         <div style={{ fontSize: '0.85rem', color: 'var(--secondary)', fontWeight: 800 }}>
-                                            {product.quantity_available} {t('unit_q')} {t('available_qty')}
+                                            {product.quantity_available} {product.unit} {t('available_qty')}
                                         </div>
                                     </div>
 

@@ -3,48 +3,84 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import DashboardLayout from '@/components/DashboardLayout';
 import { useLanguage } from '@/context/LanguageContext';
-import { Search, Loader2, QrCode, ArrowRight, Warehouse, Thermometer, Droplets, Sprout, Wind } from 'lucide-react';
+import { Search, Loader2, QrCode, ArrowRight, Warehouse, CheckCircle2, XCircle, Clock, Package, User, AlertTriangle } from 'lucide-react';
+import { useAuth } from '@/context/AuthContext';
+import { db, collection, query, where, getDocs, orderBy, doc, updateDoc, addDoc, getDoc } from '@/lib/firebase';
+import { Order } from '@/lib/supabase';
 
-import { API_BASE } from '@/lib/firebase';
-
-type OrderItem = {
-    id: string;
-    pickup_code: string;
+type PendingOrder = Order & {
     buyer_name: string;
     product_name: string;
-    quantity: number;
-    total_price: number;
-    product_id: string;
-    status: string;
-    created_at: string;
-};
-
-type SensorData = {
-    temperature: number;
-    humidity: number;
-    soil_moisture: number;
-    wind_speed: number;
+    seller_id: string;
+    unit?: string;
 };
 
 export default function OrganizerQueue() {
     const { t } = useLanguage();
-    const [orders, setOrders] = useState<OrderItem[]>([]);
-    const [sensors, setSensors] = useState<SensorData | null>(null);
+    const { user } = useAuth();
+    const [orders, setOrders] = useState<PendingOrder[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
-    const [confirming, setConfirming] = useState<string | null>(null);
+    const [processing, setProcessing] = useState<string | null>(null);
+    const [tab, setTab] = useState<'pending' | 'approved' | 'completed'>('pending');
 
     const fetchData = useCallback(async () => {
         try {
-            const [orgRes, sensorRes] = await Promise.all([
-                fetch(`${API_BASE}/orders`),
-                fetch(`${API_BASE}/sensors`),
-            ]);
-            if (!orgRes.ok || !sensorRes.ok) throw new Error('API error');
-            const orgData = await orgRes.json();
-            const sensorData = await sensorRes.json();
-            setOrders(orgData.orders || []);
-            setSensors(sensorData.sensors);
+            // Fetch all orders from Firestore (all statuses for different tabs)
+            const ordersQuery = query(
+                collection(db, 'orders'),
+                orderBy('created_at', 'desc')
+            );
+            const snapshot = await getDocs(ordersQuery);
+            const allOrders: PendingOrder[] = [];
+
+            for (const d of snapshot.docs) {
+                const data = d.data();
+                let buyerName = data.buyer_name || 'Unknown Buyer';
+                let productName = data.product_name || 'Unknown Product';
+                let sellerId = data.seller_id || '';
+                let unit = '';
+
+                // If buyer_name is missing, fetch it
+                if (!data.buyer_name && data.buyer_id) {
+                    try {
+                        const buyerSnap = await getDoc(doc(db, 'profiles', data.buyer_id));
+                        if (buyerSnap.exists()) {
+                            buyerName = buyerSnap.data().full_name || 'Unknown Buyer';
+                        }
+                    } catch { }
+                }
+
+                // If product_name is missing, fetch it
+                if (!data.product_name && data.product_id) {
+                    try {
+                        const productSnap = await getDoc(doc(db, 'products', data.product_id));
+                        if (productSnap.exists()) {
+                            productName = productSnap.data().name || 'Unknown Product';
+                            sellerId = productSnap.data().seller_id || sellerId;
+                            unit = productSnap.data().unit || '';
+                        }
+                    } catch { }
+                }
+
+                allOrders.push({
+                    id: d.id,
+                    buyer_id: data.buyer_id,
+                    product_id: data.product_id,
+                    quantity: data.quantity,
+                    total_price: data.total_price,
+                    status: data.status,
+                    pickup_code: data.pickup_code || null,
+                    reservation_expiry: data.reservation_expiry || null,
+                    created_at: data.created_at,
+                    buyer_name: buyerName,
+                    product_name: productName,
+                    seller_id: sellerId || data.seller_id || '',
+                    unit: unit,
+                });
+            }
+
+            setOrders(allOrders);
         } catch (err) {
             console.error('Failed to fetch queue data:', err);
         } finally {
@@ -54,134 +90,300 @@ export default function OrganizerQueue() {
 
     useEffect(() => {
         fetchData();
-        const interval = setInterval(fetchData, 1000);
+        const interval = setInterval(fetchData, 5000);
         return () => clearInterval(interval);
     }, [fetchData]);
 
-    const handleConfirmPickup = async (order: OrderItem) => {
-        if (confirming) return;
-        setConfirming(order.id);
+    const handleApprove = async (order: PendingOrder) => {
+        if (processing) return;
+        setProcessing(order.id);
         try {
-            const res = await fetch(`${API_BASE}/orders/${order.id}/complete`, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-            if (!res.ok) throw new Error('Failed');
+            // Update order status to 'approved'
+            await updateDoc(doc(db, 'orders', order.id), {
+                status: 'approved',
+                approved_at: new Date().toISOString(),
+                approved_by: user?.email || 'organizer',
+            });
             await fetchData();
-        } catch {
-            alert('Failed to complete order.');
+        } catch (err) {
+            console.error('Approval failed:', err);
+            alert('Failed to approve order.');
         } finally {
-            setConfirming(null);
+            setProcessing(null);
         }
     };
 
-    const filteredOrders = orders.filter(o =>
-        o.status === 'reserved' && (
-            o.pickup_code?.toUpperCase().includes(searchTerm.toUpperCase()) ||
-            o.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            o.buyer_name?.toLowerCase().includes(searchTerm.toLowerCase())
-        )
+    const handleReject = async (order: PendingOrder) => {
+        if (processing) return;
+        if (!confirm(`Are you sure you want to reject this order from ${order.buyer_name}?`)) return;
+        setProcessing(order.id);
+        try {
+            // 1. Update order status to 'cancelled'
+            await updateDoc(doc(db, 'orders', order.id), {
+                status: 'cancelled',
+                cancelled_at: new Date().toISOString(),
+                cancelled_by: user?.email || 'organizer',
+            });
+
+            // 2. Restore stock to the product
+            const productSnap = await getDoc(doc(db, 'products', order.product_id));
+            if (productSnap.exists()) {
+                const currentQty = productSnap.data().quantity_available || 0;
+                await updateDoc(doc(db, 'products', order.product_id), {
+                    quantity_available: currentQty + order.quantity,
+                });
+            }
+
+            await fetchData();
+        } catch (err) {
+            console.error('Rejection failed:', err);
+            alert('Failed to reject order.');
+        } finally {
+            setProcessing(null);
+        }
+    };
+
+    const handleComplete = async (order: PendingOrder) => {
+        if (processing) return;
+        setProcessing(order.id);
+        try {
+            // 1. Mark the order as completed
+            await updateDoc(doc(db, 'orders', order.id), {
+                status: 'completed',
+                completed_at: new Date().toISOString(),
+            });
+
+            // 2. Release the held transaction so seller gets paid
+            const txQuery = query(
+                collection(db, 'transactions'),
+                where('order_id', '==', order.id),
+                where('status', '==', 'held')
+            );
+            const txSnap = await getDocs(txQuery);
+            for (const txDoc of txSnap.docs) {
+                await updateDoc(txDoc.ref, {
+                    status: 'released',
+                    released_at: new Date().toISOString(),
+                });
+            }
+
+            await fetchData();
+        } catch (err) {
+            console.error('Complete failed:', err);
+            alert('Failed to complete order.');
+        } finally {
+            setProcessing(null);
+        }
+    };
+
+    const pendingOrders = orders.filter(o => o.status === 'pending');
+    const approvedOrders = orders.filter(o => o.status === 'approved' || o.status === 'reserved');
+    const completedOrders = orders.filter(o => o.status === 'completed');
+
+    const displayedOrders = tab === 'pending' ? pendingOrders : tab === 'approved' ? approvedOrders : completedOrders;
+
+    const filteredOrders = displayedOrders.filter(o =>
+        o.pickup_code?.toUpperCase().includes(searchTerm.toUpperCase()) ||
+        o.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        o.buyer_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        o.product_name?.toLowerCase().includes(searchTerm.toLowerCase())
     );
+
+    const getTimeAgo = (isoStr: string): string => {
+        if (!isoStr) return 'Unknown';
+        const diff = Date.now() - new Date(isoStr).getTime();
+        const secs = Math.floor(diff / 1000);
+        if (secs < 60) return `${secs}s ago`;
+        const mins = Math.floor(secs / 60);
+        if (mins < 60) return `${mins}m ago`;
+        const hours = Math.floor(mins / 60);
+        if (hours < 24) return `${hours}h ago`;
+        return `${Math.floor(hours / 24)}d ago`;
+    };
 
     return (
         <DashboardLayout role="organizer">
-            <div style={{ marginBottom: '2.5rem' }}>
-                <h1 style={{ fontSize: '2.25rem', fontWeight: 900, letterSpacing: '-0.05em' }}>Warehouse <span style={{ color: 'var(--primary)' }}>Queue.</span></h1>
-                <p style={{ color: 'var(--text-muted)', fontSize: '1rem', fontWeight: 500 }}>Scan and verify Pickup PINs for outbound release.</p>
+            <div style={{ marginBottom: '2rem' }}>
+                <h1 style={{ fontSize: '2.25rem', fontWeight: 900, letterSpacing: '-0.05em' }}>
+                    Pickup <span style={{ color: 'var(--primary)' }}>Queue.</span>
+                </h1>
+                <p style={{ color: 'var(--text-muted)', fontSize: '1rem', fontWeight: 500 }}>
+                    Review, approve, and manage incoming orders from buyers.
+                </p>
             </div>
 
-            {/* Sensor Strip */}
-            {sensors && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem', marginBottom: '1.5rem' }}>
-                    {[
-                        { label: 'Temperature', value: `${sensors.temperature.toFixed(1)}°C`, icon: Thermometer, color: sensors.temperature > 35 ? 'var(--error)' : 'var(--primary)' },
-                        { label: 'Humidity', value: `${sensors.humidity.toFixed(1)}%`, icon: Droplets, color: 'var(--primary)' },
-                        { label: 'Soil Moisture', value: `${sensors.soil_moisture.toFixed(1)}%`, icon: Sprout, color: 'var(--warning)' },
-                        { label: 'Wind Speed', value: `${sensors.wind_speed.toFixed(1)} km/h`, icon: Wind, color: 'var(--secondary)' },
-                    ].map((s, i) => (
-                        <div key={i} style={{ padding: '0.875rem 1rem', background: '#f8fafc', border: '1px solid var(--border-soft)', borderRadius: '12px', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                            <s.icon size={18} color={s.color} />
-                            <div>
-                                <p style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--text-soft)', textTransform: 'uppercase' }}>{s.label}</p>
-                                <p style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--secondary)' }}>{s.value}</p>
-                            </div>
-                        </div>
-                    ))}
+            {/* Stats Strip */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1rem', marginBottom: '2rem' }}>
+                <div className="card-white" style={{ padding: '1.25rem', cursor: 'pointer', borderLeft: tab === 'pending' ? '4px solid var(--warning)' : '4px solid transparent', transition: 'all 0.2s' }} onClick={() => setTab('pending')}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                        <span style={{ fontSize: '0.65rem', fontWeight: 800, color: 'var(--text-soft)', textTransform: 'uppercase', letterSpacing: '1px' }}>Pending Approval</span>
+                        <AlertTriangle size={16} color="var(--warning)" />
+                    </div>
+                    <h3 style={{ fontSize: '1.75rem', fontWeight: 900, color: pendingOrders.length > 0 ? 'var(--warning)' : 'var(--secondary)' }}>{pendingOrders.length}</h3>
+                    <p style={{ fontSize: '0.7rem', color: 'var(--text-soft)', fontWeight: 600 }}>Need your review</p>
                 </div>
-            )}
+                <div className="card-white" style={{ padding: '1.25rem', cursor: 'pointer', borderLeft: tab === 'approved' ? '4px solid var(--success)' : '4px solid transparent', transition: 'all 0.2s' }} onClick={() => setTab('approved')}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                        <span style={{ fontSize: '0.65rem', fontWeight: 800, color: 'var(--text-soft)', textTransform: 'uppercase', letterSpacing: '1px' }}>Approved</span>
+                        <CheckCircle2 size={16} color="var(--success)" />
+                    </div>
+                    <h3 style={{ fontSize: '1.75rem', fontWeight: 900, color: 'var(--success)' }}>{approvedOrders.length}</h3>
+                    <p style={{ fontSize: '0.7rem', color: 'var(--text-soft)', fontWeight: 600 }}>Awaiting buyer payment</p>
+                </div>
+                <div className="card-white" style={{ padding: '1.25rem', cursor: 'pointer', borderLeft: tab === 'completed' ? '4px solid var(--primary)' : '4px solid transparent', transition: 'all 0.2s' }} onClick={() => setTab('completed')}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                        <span style={{ fontSize: '0.65rem', fontWeight: 800, color: 'var(--text-soft)', textTransform: 'uppercase', letterSpacing: '1px' }}>Completed</span>
+                        <Package size={16} color="var(--primary)" />
+                    </div>
+                    <h3 style={{ fontSize: '1.75rem', fontWeight: 900, color: 'var(--primary)' }}>{completedOrders.length}</h3>
+                    <p style={{ fontSize: '0.7rem', color: 'var(--text-soft)', fontWeight: 600 }}>Paid & picked up</p>
+                </div>
+            </div>
 
             {loading ? (
                 <div style={{ display: 'flex', justifyContent: 'center', padding: '3rem' }}>
-                    <Loader2 size={32} color="var(--primary)" className="animate-spin" />
+                    <Loader2 size={32} color="var(--primary)" style={{ animation: 'spin 1s linear infinite' }} />
                 </div>
             ) : (
-                <div className="card-white" style={{ padding: '2.5rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2.5rem' }}>
+                <div className="card-white" style={{ padding: '2rem' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
                         <div style={{ position: 'relative', width: '320px' }}>
                             <Search size={18} style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-soft)' }} />
                             <input
                                 type="text"
                                 className="input-modern"
-                                placeholder="Filter by PIN or Buyer..."
-                                style={{ paddingLeft: '2.75rem', height: '48px', fontSize: '0.9rem' }}
+                                placeholder="Search by name, PIN, or product..."
+                                style={{ paddingLeft: '2.75rem', height: '44px', fontSize: '0.85rem' }}
                                 value={searchTerm}
                                 onChange={(e) => setSearchTerm(e.target.value)}
                             />
                         </div>
-                        <button className="btn-modern btn-primary-modern" style={{ height: '48px', padding: '0 1.5rem' }}>
-                            <QrCode size={18} /> Launch Scanner
-                        </button>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--success)', animation: 'pulse 2s infinite' }} />
+                            <span style={{ fontSize: '0.7rem', fontWeight: 700, color: 'var(--text-soft)' }}>Auto-refresh • 5s</span>
+                        </div>
                     </div>
 
                     {filteredOrders.length === 0 ? (
-                        <div style={{ textAlign: 'center', padding: '6rem', background: 'var(--bg-main)', borderRadius: '24px', border: '1px dashed var(--border)' }}>
-                            <Warehouse size={48} color="#94a3b8" style={{ marginBottom: '1.5rem', opacity: 0.5 }} />
-                            <h4 style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--secondary)' }}>Hub Synchronized</h4>
-                            <p style={{ color: 'var(--text-soft)', fontSize: '0.95rem', fontWeight: 500, marginTop: '0.5rem' }}>No active pre-order lots currently scheduled for release.</p>
+                        <div style={{ textAlign: 'center', padding: '5rem', background: 'var(--bg-main)', borderRadius: '20px', border: '1px dashed var(--border)' }}>
+                            <Warehouse size={48} color="#94a3b8" style={{ marginBottom: '1.25rem', opacity: 0.4 }} />
+                            <h4 style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--secondary)' }}>
+                                {tab === 'pending' ? 'No Pending Orders' : tab === 'approved' ? 'No Approved Orders' : 'No Completed Orders'}
+                            </h4>
+                            <p style={{ color: 'var(--text-soft)', fontSize: '0.9rem', fontWeight: 500, marginTop: '0.5rem' }}>
+                                {tab === 'pending' ? 'New buyer orders will appear here for your approval.' : tab === 'approved' ? 'Approved orders awaiting buyer payment will show here.' : 'Completed transactions will be listed here.'}
+                            </p>
                         </div>
                     ) : (
-                        <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: '0 0.75rem' }}>
-                            <thead>
-                                <tr style={{ color: 'var(--text-soft)', fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                                    <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 800 }}>Validation PIN</th>
-                                    <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 800 }}>Counterparty</th>
-                                    <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 800 }}>Storage Lot</th>
-                                    <th style={{ padding: '1rem', textAlign: 'left', fontWeight: 800 }}>Audit Val</th>
-                                    <th style={{ padding: '1rem', textAlign: 'right', fontWeight: 800 }}>Protocol</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {filteredOrders.map((order) => (
-                                    <tr key={order.id} style={{ background: 'white', borderRadius: '14px' }}>
-                                        <td style={{ padding: '1.5rem 1rem' }}>
-                                            <span style={{ fontWeight: 900, color: 'var(--primary)', letterSpacing: '2px', background: 'var(--primary-soft)', padding: '0.625rem 1rem', borderRadius: '10px', fontSize: '1rem', border: '1px solid rgba(5, 150, 105, 0.1)' }}>
-                                                {order.pickup_code}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                            {filteredOrders.map((order) => (
+                                <div key={order.id} style={{
+                                    display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                                    padding: '1.25rem 1.5rem', background: '#fafbfc', borderRadius: '16px',
+                                    border: `1px solid ${order.status === 'pending' ? 'rgba(245, 158, 11, 0.2)' : 'var(--border-soft)'}`,
+                                    transition: 'all 0.2s',
+                                }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem', flex: 1 }}>
+                                        {/* Pickup Code */}
+                                        <div style={{
+                                            fontWeight: 900, color: 'var(--primary)', letterSpacing: '2px',
+                                            background: 'var(--primary-soft)', padding: '0.5rem 0.875rem',
+                                            borderRadius: '10px', fontSize: '0.85rem', fontFamily: 'monospace',
+                                            border: '1px solid rgba(5, 150, 105, 0.1)', minWidth: '90px', textAlign: 'center',
+                                        }}>
+                                            {order.pickup_code || '—'}
+                                        </div>
+
+                                        {/* Order Info */}
+                                        <div style={{ flex: 1 }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                                                <p style={{ fontWeight: 800, fontSize: '0.95rem', color: 'var(--secondary)' }}>{order.product_name}</p>
+                                                <span className={`badge-clean ${order.status === 'pending' ? 'badge-pending' : order.status === 'completed' ? 'badge-success' : 'badge-success'}`} style={{ fontSize: '0.55rem', padding: '0.2rem 0.5rem' }}>
+                                                    {order.status.toUpperCase()}
+                                                </span>
+                                            </div>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                                                <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                                                    <User size={12} /> {order.buyer_name}
+                                                </span>
+                                                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>
+                                                    {order.quantity} {order.unit || t('unit_q')}
+                                                </span>
+                                                <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', fontSize: '0.75rem', color: 'var(--text-soft)' }}>
+                                                    <Clock size={11} /> {getTimeAgo(order.created_at)}
+                                                </span>
+                                            </div>
+                                        </div>
+
+                                        {/* Price */}
+                                        <span style={{ fontWeight: 900, fontSize: '1.05rem', color: 'var(--secondary)', minWidth: '110px', textAlign: 'right' }}>
+                                            {t('currency_symbol')}{order.total_price.toFixed(2)}
+                                        </span>
+                                    </div>
+
+                                    {/* Action Buttons */}
+                                    <div style={{ display: 'flex', gap: '0.5rem', marginLeft: '1.25rem' }}>
+                                        {order.status === 'pending' && (
+                                            <>
+                                                <button
+                                                    onClick={() => handleApprove(order)}
+                                                    className="btn-modern btn-primary-modern"
+                                                    style={{ height: '38px', padding: '0 1rem', borderRadius: '10px', fontSize: '0.8rem', gap: '0.375rem' }}
+                                                    disabled={!!processing}
+                                                >
+                                                    {processing === order.id ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : <><CheckCircle2 size={14} /> Approve</>}
+                                                </button>
+                                                <button
+                                                    onClick={() => handleReject(order)}
+                                                    className="btn-modern"
+                                                    style={{
+                                                        height: '38px', padding: '0 1rem', borderRadius: '10px', fontSize: '0.8rem',
+                                                        background: 'white', color: 'var(--error)', border: '1px solid rgba(239,68,68,0.3)',
+                                                        cursor: 'pointer', gap: '0.375rem', display: 'flex', alignItems: 'center',
+                                                    }}
+                                                    disabled={!!processing}
+                                                >
+                                                    <XCircle size={14} /> Reject
+                                                </button>
+                                            </>
+                                        )}
+                                        {order.status === 'approved' && (
+                                            <span style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontSize: '0.75rem', color: 'var(--warning)', fontWeight: 700 }}>
+                                                <Clock size={14} /> Awaiting Payment
                                             </span>
-                                        </td>
-                                        <td style={{ padding: '1.5rem 1rem' }}>
-                                            <p style={{ fontWeight: 800, fontSize: '0.95rem', color: 'var(--secondary)' }}>{order.buyer_name || 'Anonymous Node'}</p>
-                                        </td>
-                                        <td style={{ padding: '1.5rem 1rem' }}>
-                                            <p style={{ fontWeight: 800, fontSize: '0.95rem', color: 'var(--secondary)' }}>{order.product_name}</p>
-                                            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 500 }}>{order.quantity} {t('unit_q')}</p>
-                                        </td>
-                                        <td style={{ padding: '1.5rem 1rem' }}>
-                                            <span style={{ fontWeight: 900, fontSize: '1.1rem', color: 'var(--secondary)' }}>{t('currency_symbol')}{order.total_price.toFixed(2)}</span>
-                                        </td>
-                                        <td style={{ padding: '1.5rem 1rem', textAlign: 'right' }}>
+                                        )}
+                                        {order.status === 'reserved' && (
                                             <button
-                                                onClick={() => handleConfirmPickup(order)}
+                                                onClick={() => handleComplete(order)}
                                                 className="btn-modern btn-primary-modern"
-                                                style={{ height: '42px', padding: '0 1.25rem', borderRadius: '12px' }}
-                                                disabled={!!confirming}
+                                                style={{ height: '38px', padding: '0 1rem', borderRadius: '10px', fontSize: '0.8rem', gap: '0.375rem' }}
+                                                disabled={!!processing}
                                             >
-                                                {confirming === order.id ? <Loader2 size={18} className="animate-spin" /> : <>Verify Release <ArrowRight size={16} /></>}
+                                                {processing === order.id ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} /> : <><Package size={14} /> Mark Picked Up</>}
                                             </button>
-                                        </td>
-                                    </tr>
-                                ))}
-                            </tbody>
-                        </table>
+                                        )}
+                                        {order.status === 'completed' && (
+                                            <span style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontSize: '0.8rem', color: 'var(--success)', fontWeight: 700 }}>
+                                                <CheckCircle2 size={14} /> Done
+                                            </span>
+                                        )}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
                     )}
                 </div>
             )}
+
+            <style jsx>{`
+                @keyframes pulse {
+                    0%, 100% { opacity: 1; }
+                    50% { opacity: 0.4; }
+                }
+                @keyframes spin {
+                    to { transform: rotate(360deg); }
+                }
+            `}</style>
         </DashboardLayout>
     );
 }

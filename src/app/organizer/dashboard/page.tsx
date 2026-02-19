@@ -5,12 +5,12 @@ import DashboardLayout from '@/components/DashboardLayout';
 import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
 import {
-    Truck, ClipboardList, Search, Loader2, QrCode, ArrowRight,
-    ShieldCheck, Warehouse, Thermometer, Droplets, Wind, Activity,
-    Signal, Clock, AlertTriangle, CheckCircle2, ChevronDown, Flame, Fan, Zap
+    ClipboardList, Loader2,
+    Warehouse, Thermometer, Droplets, Wind, Activity,
+    Signal, Clock, AlertTriangle, ChevronDown, Flame, Fan, Zap, WifiOff
 } from 'lucide-react';
 
-import { API_BASE } from '@/lib/firebase';
+import { API_BASE, db, collection, query, where, getDocs, orderBy } from '@/lib/firebase';
 
 type OrderItem = {
     id: string;
@@ -24,12 +24,7 @@ type OrderItem = {
     created_at: string;
 };
 
-type OrganizerStats = {
-    active_queue: number;
-    gate_traffic: number;
-    hub_security: number;
-    flow_volume: number;
-};
+
 
 type SensorData = {
     temperature: number;
@@ -89,12 +84,11 @@ export default function OrganizerDashboard() {
     const { t } = useLanguage();
     const { user, profile } = useAuth();
     const [orders, setOrders] = useState<OrderItem[]>([]);
-    const [stats, setStats] = useState<OrganizerStats | null>(null);
+
     const [sensors, setSensors] = useState<SensorData | null>(null);
     const [hubs, setHubs] = useState<HubData[]>([]);
     const [loading, setLoading] = useState(true);
-    const [searchTerm, setSearchTerm] = useState('');
-    const [confirming, setConfirming] = useState<string | null>(null);
+
     const [error, setError] = useState(false);
     const [expandedHub, setExpandedHub] = useState<string | null>(null);
     const [lastSync, setLastSync] = useState<Date | null>(null);
@@ -204,20 +198,40 @@ export default function OrganizerDashboard() {
                 ? `${API_BASE}/hubs?organizer_email=${encodeURIComponent(email)}`
                 : `${API_BASE}/hubs`;
 
-            const [orgRes, sensorRes, hubsRes] = await Promise.all([
-                fetch(`${API_BASE}/stats/organizer`),
+            // Fetch hubs and sensors from API, orders from Firestore
+            const [sensorRes, hubsRes] = await Promise.all([
                 fetch(`${API_BASE}/sensors`),
                 fetch(hubUrl),
             ]);
 
-            if (!orgRes.ok || !sensorRes.ok) throw new Error('API error');
+            if (!sensorRes.ok) throw new Error('API error');
 
-            const orgData = await orgRes.json();
             const sensorData = await sensorRes.json();
             const hubsData = hubsRes.ok ? await hubsRes.json() : { hubs: [] };
 
-            setStats(orgData.stats);
-            setOrders(orgData.orders || []);
+            // Fetch pending orders from Firestore (real data)
+            const ordersQuery = query(
+                collection(db, 'orders'),
+                where('status', 'in', ['pending', 'approved', 'reserved']),
+                orderBy('created_at', 'desc')
+            );
+            const ordersSnap = await getDocs(ordersQuery);
+            const firestoreOrders: OrderItem[] = ordersSnap.docs.map(d => {
+                const data = d.data();
+                return {
+                    id: d.id,
+                    pickup_code: data.pickup_code || '',
+                    buyer_name: data.buyer_name || 'Unknown',
+                    product_name: data.product_name || 'Unknown',
+                    quantity: data.quantity || 0,
+                    total_price: data.total_price || 0,
+                    product_id: data.product_id || '',
+                    status: data.status || 'pending',
+                    created_at: data.created_at || '',
+                };
+            });
+
+            setOrders(firestoreOrders);
             setSensors(sensorData.sensors);
             setHubs(hubsData.hubs || []);
             setError(false);
@@ -236,33 +250,11 @@ export default function OrganizerDashboard() {
         return () => clearInterval(interval);
     }, [fetchData]);
 
-    const handleConfirmPickup = async (order: OrderItem) => {
-        if (confirming) return;
-        setConfirming(order.id);
-        try {
-            const res = await fetch(`${API_BASE}/orders/${order.id}/complete`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-            });
-            if (!res.ok) throw new Error('Failed');
-            await fetchData();
-        } catch (err) {
-            console.error('Error:', err);
-            alert('Failed to complete order. Please try again.');
-        } finally {
-            setConfirming(null);
-        }
-    };
 
-    const filteredOrders = orders.filter(o =>
-        o.status === 'reserved' && (
-            o.pickup_code?.toUpperCase().includes(searchTerm.toUpperCase()) ||
-            o.id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-            o.buyer_name?.toLowerCase().includes(searchTerm.toLowerCase())
-        )
-    );
 
-    const onlineHubs = hubs.filter(h => h.status === 'online').length;
+    const pendingOrders = orders.filter(o => o.status === 'pending');
+
+    const onlineHubs = hubs.filter(h => isDeviceConnected(h)).length;
     const avgTemp = hubs.length ? hubs.reduce((s, h) => s + h.temperature, 0) / hubs.length : 0;
     const avgMoist = hubs.length ? hubs.reduce((s, h) => s + h.moisture, 0) / hubs.length : 0;
 
@@ -347,7 +339,7 @@ export default function OrganizerDashboard() {
                                     <ClipboardList size={18} color="var(--primary)" />
                                 </div>
                             </div>
-                            <h2 style={{ fontSize: '2rem', fontWeight: 900, marginBottom: '0.25rem' }}>{filteredOrders.length}</h2>
+                            <h2 style={{ fontSize: '2rem', fontWeight: 900, marginBottom: '0.25rem' }}>{pendingOrders.length}</h2>
                             <p style={{ fontSize: '0.7rem', color: 'var(--text-soft)', fontWeight: 600 }}>Awaiting clearance</p>
                         </div>
                     </div>
@@ -402,16 +394,28 @@ export default function OrganizerDashboard() {
                                                         </div>
                                                     </div>
                                                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
-                                                        <div style={{
-                                                            width: '7px', height: '7px', borderRadius: '50%',
-                                                            background: hub.status === 'online' ? 'var(--success)' : 'var(--error)',
-                                                            boxShadow: hub.status === 'online' ? '0 0 8px rgba(16,185,129,0.5)' : 'none',
-                                                            animation: hub.status === 'online' ? 'pulse 2s infinite' : 'none'
-                                                        }} />
-                                                        <span style={{
-                                                            fontSize: '0.6rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px',
-                                                            color: hub.status === 'online' ? 'var(--success)' : 'var(--error)'
-                                                        }}>{hub.status}</span>
+                                                        {isDeviceConnected(hub) ? (
+                                                            <>
+                                                                <div style={{
+                                                                    width: '7px', height: '7px', borderRadius: '50%',
+                                                                    background: 'var(--success)',
+                                                                    boxShadow: '0 0 8px rgba(16,185,129,0.5)',
+                                                                    animation: 'pulse 2s infinite'
+                                                                }} />
+                                                                <span style={{
+                                                                    fontSize: '0.6rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px',
+                                                                    color: 'var(--success)'
+                                                                }}>ONLINE</span>
+                                                            </>
+                                                        ) : (
+                                                            <>
+                                                                <WifiOff size={12} color="var(--error)" />
+                                                                <span style={{
+                                                                    fontSize: '0.6rem', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.5px',
+                                                                    color: 'var(--error)'
+                                                                }}>OFFLINE</span>
+                                                            </>
+                                                        )}
                                                     </div>
                                                 </div>
 
@@ -612,135 +616,7 @@ export default function OrganizerDashboard() {
                         )}
                     </div>
 
-                    {/* Stats Row */}
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '1.5rem', marginBottom: '3rem' }}>
-                        <div className="card-white" style={{ padding: '2rem' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
-                                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-soft)', textTransform: 'uppercase', letterSpacing: '1px' }}>Queue</span>
-                                <div style={{ width: '40px', height: '40px', background: 'var(--primary-soft)', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                    <ClipboardList size={20} color="var(--primary)" />
-                                </div>
-                            </div>
-                            <h2 style={{ fontSize: '2rem', fontWeight: 900, marginBottom: '0.5rem' }}>{stats?.active_queue || filteredOrders.length}</h2>
-                            <p style={{ fontSize: '0.75rem', color: 'var(--text-soft)', fontWeight: 600 }}>Lots pending clearance</p>
-                        </div>
 
-                        <div className="card-white" style={{ padding: '2rem' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
-                                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-soft)', textTransform: 'uppercase', letterSpacing: '1px' }}>Traffic</span>
-                                <div style={{ width: '40px', height: '40px', background: 'var(--success-soft)', borderRadius: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                                    <Truck size={20} color="var(--success)" />
-                                </div>
-                            </div>
-                            <h2 style={{ fontSize: '2rem', fontWeight: 900, marginBottom: '0.5rem' }}>{stats?.gate_traffic || 0}</h2>
-                            <p style={{ fontSize: '0.75rem', color: 'var(--text-soft)', fontWeight: 600 }}>Scheduled dispatch</p>
-                        </div>
-
-                        <div className="card-white" style={{ padding: '2rem' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
-                                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-soft)', textTransform: 'uppercase', letterSpacing: '1px' }}>Security</span>
-                                <ShieldCheck size={24} color="var(--primary)" />
-                            </div>
-                            <h2 style={{ fontSize: '2rem', fontWeight: 900, marginBottom: '0.5rem' }}>{stats?.hub_security || 0}%</h2>
-                            <p style={{ fontSize: '0.75rem', color: 'var(--text-soft)', fontWeight: 600 }}>Node Health Index</p>
-                        </div>
-
-                        <div className="card-white" style={{ padding: '2rem' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
-                                <span style={{ fontSize: '0.8rem', fontWeight: 800, color: 'var(--text-soft)', textTransform: 'uppercase', letterSpacing: '1px' }}>Volume</span>
-                                <Warehouse size={20} color="var(--primary)" />
-                            </div>
-                            <h2 style={{ fontSize: '2rem', fontWeight: 900, marginBottom: '0.5rem' }}>{t('currency_symbol')}{(stats?.flow_volume || 0).toLocaleString()}</h2>
-                            <p style={{ fontSize: '0.75rem', color: 'var(--text-soft)', fontWeight: 600 }}>Settlement velocity</p>
-                        </div>
-                    </div>
-
-                    {/* Orders Table */}
-                    <div className="card-white" style={{ padding: '2.5rem' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2.5rem' }}>
-                            <div>
-                                <h3 style={{ fontSize: '1.25rem', fontWeight: 800 }}>Clearance Terminal</h3>
-                                <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', fontWeight: 500 }}>Scan and verify Pickup PINs for outbound release.</p>
-                            </div>
-                            <div style={{ display: 'flex', gap: '1rem' }}>
-                                <div style={{ position: 'relative', width: '280px' }}>
-                                    <Search size={18} style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-soft)' }} />
-                                    <input
-                                        type="text"
-                                        className="input-modern"
-                                        placeholder="Filter by PIN or Buyer..."
-                                        style={{ paddingLeft: '2.75rem', height: '44px', fontSize: '0.85rem' }}
-                                        value={searchTerm}
-                                        onChange={(e) => setSearchTerm(e.target.value)}
-                                    />
-                                </div>
-                                <button className="btn-modern btn-primary-modern" style={{ height: '44px', padding: '0 1.25rem' }}>
-                                    <QrCode size={18} /> Scanner
-                                </button>
-                            </div>
-                        </div>
-
-                        {filteredOrders.length === 0 ? (
-                            <div style={{ textAlign: 'center', padding: '5rem', background: 'var(--bg-main)', borderRadius: '20px', border: '1px dashed var(--border)' }}>
-                                <CheckCircle2 size={48} color="#94a3b8" style={{ marginBottom: '1.25rem', opacity: 0.4 }} />
-                                <h4 style={{ fontSize: '1.1rem', fontWeight: 800, color: 'var(--secondary)' }}>All Clear</h4>
-                                <p style={{ color: 'var(--text-soft)', fontSize: '0.9rem', fontWeight: 500, marginTop: '0.5rem' }}>No pending orders at this time.</p>
-                            </div>
-                        ) : (
-                            <div style={{ overflowX: 'auto' }}>
-                                <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: '0 0.625rem' }}>
-                                    <thead>
-                                        <tr style={{ color: 'var(--text-soft)', fontSize: '0.7rem', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                                            <th style={{ padding: '0.75rem 1rem', textAlign: 'left', fontWeight: 800 }}>PIN</th>
-                                            <th style={{ padding: '0.75rem 1rem', textAlign: 'left', fontWeight: 800 }}>Buyer</th>
-                                            <th style={{ padding: '0.75rem 1rem', textAlign: 'left', fontWeight: 800 }}>Product</th>
-                                            <th style={{ padding: '0.75rem 1rem', textAlign: 'left', fontWeight: 800 }}>Value</th>
-                                            <th style={{ padding: '0.75rem 1rem', textAlign: 'right', fontWeight: 800 }}>Action</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {filteredOrders.map((order) => (
-                                            <tr key={order.id} style={{ background: 'white' }}>
-                                                <td style={{ padding: '1.25rem 1rem' }}>
-                                                    <span style={{
-                                                        fontWeight: 900, color: 'var(--primary)', letterSpacing: '2px',
-                                                        background: 'var(--primary-soft)', padding: '0.5rem 0.875rem', borderRadius: '10px',
-                                                        fontSize: '0.95rem', border: '1px solid rgba(5, 150, 105, 0.1)'
-                                                    }}>
-                                                        {order.pickup_code}
-                                                    </span>
-                                                </td>
-                                                <td style={{ padding: '1.25rem 1rem' }}>
-                                                    <p style={{ fontWeight: 800, fontSize: '0.9rem', color: 'var(--secondary)' }}>{order.buyer_name || 'Anonymous'}</p>
-                                                    <p style={{ fontSize: '0.65rem', color: 'var(--text-soft)', fontWeight: 700, textTransform: 'uppercase' }}>Verified ID</p>
-                                                </td>
-                                                <td style={{ padding: '1.25rem 1rem' }}>
-                                                    <p style={{ fontWeight: 800, fontSize: '0.9rem', color: 'var(--secondary)' }}>{order.product_name}</p>
-                                                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 500 }}>{order.quantity} {t('unit_q')}</p>
-                                                </td>
-                                                <td style={{ padding: '1.25rem 1rem' }}>
-                                                    <span style={{ fontWeight: 900, fontSize: '1.05rem', color: 'var(--secondary)' }}>{t('currency_symbol')}{order.total_price.toLocaleString()}</span>
-                                                </td>
-                                                <td style={{ padding: '1.25rem 1rem', textAlign: 'right' }}>
-                                                    <button
-                                                        onClick={() => handleConfirmPickup(order)}
-                                                        className="btn-modern btn-primary-modern"
-                                                        style={{ height: '40px', padding: '0 1rem', borderRadius: '10px', fontSize: '0.8rem' }}
-                                                        disabled={!!confirming}
-                                                    >
-                                                        {confirming === order.id
-                                                            ? <Loader2 size={16} style={{ animation: 'spin 1s linear infinite' }} />
-                                                            : <>Release <ArrowRight size={14} /></>
-                                                        }
-                                                    </button>
-                                                </td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            </div>
-                        )}
-                    </div>
                 </>
             )}
 

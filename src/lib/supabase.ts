@@ -30,7 +30,9 @@ export type Order = {
   product_id: string;
   quantity: number;
   total_price: number;
-  status: 'pending' | 'reserved' | 'confirmed' | 'completed' | 'cancelled' | 'expired';
+  reservation_fee?: number;
+  fee_paid?: boolean;
+  status: 'pending' | 'approved' | 'reserved' | 'confirmed' | 'completed' | 'cancelled' | 'expired';
   reservation_expiry: string | null;
   pickup_code: string | null;
   created_at: string;

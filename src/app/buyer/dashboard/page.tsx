@@ -2,66 +2,62 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import DashboardLayout from '@/components/DashboardLayout';
-import { ShoppingBag, Calendar, TrendingUp, ArrowUpRight, ArrowDownRight, Info, ChevronRight, LayoutGrid, Loader2, Thermometer, Droplets, Sun, Wind } from 'lucide-react';
+import { ShoppingBag, Calendar, TrendingUp, ArrowUpRight, ArrowDownRight, Info, ChevronRight, LayoutGrid, Loader2, Package, CheckCircle2 } from 'lucide-react';
 import { useLanguage } from '@/context/LanguageContext';
 import Link from 'next/link';
 
-import { API_BASE } from '@/lib/firebase';
+import { useAuth } from '@/context/AuthContext';
+import { db, collection, query, where, getDocs, orderBy } from '@/lib/firebase';
+import { Order, Product } from '@/lib/supabase';
 
-type MarketItem = {
-    name: string;
-    price: number;
-    change: number;
-    volume: string;
-    trend: string;
-};
-
-type BuyerStats = {
-    active_orders: number;
-    reservations: number;
-    completed: number;
-    savings: number;
-    order_growth: number;
-};
-
-type SensorData = {
-    temperature: number;
-    humidity: number;
-    soil_moisture: number;
-    light_intensity: number;
-    ph_level: number;
-    wind_speed: number;
-    rainfall: number;
-    co2_level: number;
-    pressure: number;
-    uv_index: number;
-};
+type OrderWithProduct = Order & { product_name: string; product_category: string; product_unit: string };
 
 export default function BuyerDashboard() {
     const { t } = useLanguage();
-    const [stats, setStats] = useState<BuyerStats | null>(null);
-    const [chartData, setChartData] = useState<number[]>([]);
-    const [marketItems, setMarketItems] = useState<MarketItem[]>([]);
-    const [sensors, setSensors] = useState<SensorData | null>(null);
+    const { user } = useAuth();
+    const [orders, setOrders] = useState<OrderWithProduct[]>([]);
+    const [products, setProducts] = useState<Product[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(false);
 
     const fetchData = useCallback(async () => {
+        if (!user) return;
+
         try {
-            const [buyerRes, sensorRes] = await Promise.all([
-                fetch(`${API_BASE}/stats/buyer`),
-                fetch(`${API_BASE}/sensors`),
-            ]);
+            // Fetch buyer's orders
+            const ordersQuery = query(
+                collection(db, 'orders'),
+                where('buyer_id', '==', user.uid),
+                orderBy('created_at', 'desc')
+            );
+            const ordersSnapshot = await getDocs(ordersQuery);
+            const ordersData = ordersSnapshot.docs.map(d => ({ id: d.id, ...d.data() } as Order));
 
-            if (!buyerRes.ok || !sensorRes.ok) throw new Error('API error');
+            // Fetch all active products for market trends
+            const productsQuery = query(
+                collection(db, 'products'),
+                where('is_active', '==', true)
+            );
+            const productsSnapshot = await getDocs(productsQuery);
+            const productsData = productsSnapshot.docs.map(d => ({ id: d.id, ...d.data() } as Product));
+            setProducts(productsData);
 
-            const buyerData = await buyerRes.json();
-            const sensorData = await sensorRes.json();
+            // Build a product lookup map
+            const productMap = new Map<string, Product>();
+            productsData.forEach(p => productMap.set(p.id, p));
 
-            setStats(buyerData.stats);
-            setChartData(buyerData.chart_data || []);
-            setMarketItems(buyerData.market || []);
-            setSensors(sensorData.sensors);
+            // Enrich orders with product info
+            const enrichedOrders: OrderWithProduct[] = ordersData.map(order => {
+                const product = productMap.get(order.product_id);
+                return {
+                    ...order,
+                    product_name: product?.name || 'Unknown Crop',
+                    product_category: product?.category || 'Other',
+                    product_unit: product?.unit || t('unit_q'),
+                };
+            });
+
+            setOrders(enrichedOrders);
             setError(false);
         } catch (err) {
             console.error('Failed to fetch data:', err);
@@ -69,54 +65,105 @@ export default function BuyerDashboard() {
         } finally {
             setLoading(false);
         }
-    }, []);
+    }, [user]);
 
     useEffect(() => {
+        setLoading(true);
         fetchData();
-        const interval = setInterval(fetchData, 5000);
+        const interval = setInterval(fetchData, 30000);
         return () => clearInterval(interval);
     }, [fetchData]);
 
-    const statCards = stats ? [
-        { key: 'active_orders', val: String(stats.active_orders), icon: ShoppingBag, color: 'var(--primary)' },
-        { key: 'reservations', val: String(stats.reservations).padStart(2, '0'), icon: Calendar, color: 'var(--warning)' },
-        { key: 'completed', val: String(stats.completed), unit: 'q', icon: LayoutGrid, color: 'var(--success)' },
-        { key: 'savings', val: stats.savings.toLocaleString(), prefix: true, icon: TrendingUp, color: 'var(--secondary)' }
-    ] : [];
+    // Compute real stats from Firestore data
+    const activeOrders = orders.filter(o => o.status === 'reserved' || o.status === 'pending' || o.status === 'approved' || o.status === 'confirmed').length;
+    const reservations = orders.filter(o => o.status === 'reserved').length;
+    const completedOrders = orders.filter(o => o.status === 'completed').length;
+    const totalSpent = orders.filter(o => o.status === 'reserved' || o.status === 'completed').reduce((sum, o) => sum + (o.total_price || 0), 0);
+
+    // Monthly growth calculation
+    const now = new Date();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+    const lastMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const lastMonth = lastMonthDate.getMonth();
+    const lastMonthYear = lastMonthDate.getFullYear();
+
+    let thisMonthSpend = 0;
+    let lastMonthSpend = 0;
+    orders.forEach(o => {
+        const d = new Date(o.created_at);
+        if (d.getMonth() === currentMonth && d.getFullYear() === currentYear) thisMonthSpend += o.total_price;
+        if (d.getMonth() === lastMonth && d.getFullYear() === lastMonthYear) lastMonthSpend += o.total_price;
+    });
+
+    let orderGrowth = 0;
+    if (lastMonthSpend > 0) {
+        orderGrowth = ((thisMonthSpend - lastMonthSpend) / lastMonthSpend) * 100;
+    } else if (thisMonthSpend > 0) {
+        orderGrowth = 100;
+    }
+
+    // Build monthly chart data from orders (last 12 months)
+    const chartData: number[] = [];
+    for (let i = 11; i >= 0; i--) {
+        const m = new Date(currentYear, currentMonth - i, 1);
+        const monthTotal = orders
+            .filter(o => {
+                const d = new Date(o.created_at);
+                return d.getMonth() === m.getMonth() && d.getFullYear() === m.getFullYear();
+            })
+            .reduce((sum, o) => sum + o.total_price, 0);
+        chartData.push(monthTotal);
+    }
+    const maxChart = Math.max(...chartData, 1);
+    const chartPercents = chartData.map(v => (v / maxChart) * 100);
+
+    const monthLabels = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+    const chartMonthLabels: string[] = [];
+    for (let i = 11; i >= 0; i--) {
+        const m = new Date(currentYear, currentMonth - i, 1);
+        chartMonthLabels.push(monthLabels[m.getMonth()]);
+    }
+
+    // Market trends: group products by category and show average prices
+    const categoryMap = new Map<string, { total: number; count: number; products: Product[] }>();
+    products.forEach(p => {
+        const cat = p.category || 'Other';
+        const entry = categoryMap.get(cat) || { total: 0, count: 0, products: [] };
+        entry.total += p.price_per_unit;
+        entry.count += 1;
+        entry.products.push(p);
+        categoryMap.set(cat, entry);
+    });
+
+    const marketItems = Array.from(categoryMap.entries()).map(([name, data]) => ({
+        name,
+        avgPrice: data.total / data.count,
+        count: data.count,
+        totalStock: data.products.reduce((s, p) => s + p.quantity_available, 0),
+        unit: data.products[0]?.unit || t('unit_q'),
+    })).slice(0, 5);
+
+    const statCards = [
+        { key: 'active_orders', val: String(activeOrders), icon: ShoppingBag, color: 'var(--primary)' },
+        { key: 'reservations', val: String(reservations).padStart(2, '0'), icon: Calendar, color: 'var(--warning)' },
+        { key: 'completed', val: String(completedOrders), icon: LayoutGrid, color: 'var(--success)' },
+        { key: 'savings', val: totalSpent.toLocaleString(), prefix: true, icon: TrendingUp, color: 'var(--secondary)' }
+    ];
 
     return (
         <DashboardLayout role="buyer">
             <div style={{ marginBottom: '2.5rem' }}>
                 <h1 style={{ fontSize: '2rem', color: 'var(--secondary)', letterSpacing: '-0.03em' }}>{t('welcome')}</h1>
                 <p style={{ color: 'var(--text-muted)', fontSize: '1rem' }}>
-                    {error ? '⚠️ Could not connect to sensors — showing saved data' : 'Your orders and market overview at a glance.'}
+                    {error ? '⚠️ Could not load data — please try again.' : 'Your orders and market overview at a glance.'}
                 </p>
             </div>
-
-            {/* Sensor Strip */}
-            {sensors && (
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.75rem', marginBottom: '1.5rem' }}>
-                    {[
-                        { label: 'Temperature', value: `${sensors.temperature.toFixed(1)}°C`, icon: Thermometer, color: sensors.temperature > 35 ? 'var(--error)' : 'var(--primary)' },
-                        { label: 'Humidity', value: `${sensors.humidity.toFixed(1)}%`, icon: Droplets, color: 'var(--primary)' },
-                        { label: 'Light', value: `${sensors.light_intensity.toFixed(0)} lux`, icon: Sun, color: 'var(--warning)' },
-                        { label: 'Wind', value: `${sensors.wind_speed.toFixed(1)} km/h`, icon: Wind, color: 'var(--secondary)' },
-                    ].map((s, i) => (
-                        <div key={i} style={{ padding: '0.875rem 1rem', background: '#f8fafc', border: '1px solid var(--border-soft)', borderRadius: '12px', display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                            <s.icon size={18} color={s.color} />
-                            <div>
-                                <p style={{ fontSize: '0.65rem', fontWeight: 700, color: 'var(--text-soft)', textTransform: 'uppercase' }}>{s.label}</p>
-                                <p style={{ fontSize: '1rem', fontWeight: 800, color: 'var(--secondary)' }}>{s.value}</p>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            )}
 
             {/* Stats Grid */}
             {loading ? (
                 <div style={{ display: 'flex', justifyContent: 'center', padding: '3rem' }}>
-                    <Loader2 size={32} color="var(--primary)" className="animate-spin" style={{ animation: 'spin 1s linear infinite' }} />
+                    <Loader2 size={32} color="var(--primary)" style={{ animation: 'spin 1s linear infinite' }} />
                 </div>
             ) : (
                 <>
@@ -132,12 +179,14 @@ export default function BuyerDashboard() {
                                     </div>
                                 </div>
                                 <h2 style={{ fontSize: '1.875rem', color: 'var(--secondary)', marginBottom: '0.25rem', fontWeight: 900 }}>
-                                    {stat.prefix && t('currency_symbol')}{stat.val}{stat.unit && ` ${t('unit_q')}`}
+                                    {stat.prefix && t('currency_symbol')}{stat.val}
                                 </h2>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontSize: '0.75rem', fontWeight: 700 }}>
-                                    <span style={{ color: 'var(--success)', display: 'flex', alignItems: 'center' }}>
-                                        <ArrowUpRight size={14} /> +{stats?.order_growth || 0}%
+                                    <span style={{ color: orderGrowth >= 0 ? 'var(--success)' : 'var(--error)', display: 'flex', alignItems: 'center' }}>
+                                        {orderGrowth >= 0 ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}
+                                        {orderGrowth > 0 ? '+' : ''}{orderGrowth.toFixed(1)}%
                                     </span>
+                                    <span style={{ color: 'var(--text-soft)' }}>vs last month</span>
                                 </div>
                             </div>
                         ))}
@@ -149,60 +198,138 @@ export default function BuyerDashboard() {
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2.5rem' }}>
                                 <div>
                                     <h3 style={{ fontSize: '1.25rem', marginBottom: '0.25rem' }}>{t('recent_activity')}</h3>
-                                    <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Your buying activity this year</p>
+                                    <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Your spending over the last 12 months</p>
                                 </div>
                                 <Link href="/buyer/orders" className="btn-modern btn-secondary-modern" style={{ padding: '0.5rem 1rem', height: 'auto', fontSize: '0.8rem' }}>
                                     {t('view_all')} <ChevronRight size={14} />
                                 </Link>
                             </div>
 
-                            <div style={{ height: '240px', display: 'flex', alignItems: 'flex-end', gap: '1rem', paddingBottom: '1.5rem', borderBottom: '1px solid var(--border-soft)' }}>
-                                {chartData.map((h, i) => (
-                                    <div key={i} style={{ flex: 1, position: 'relative' }}>
+                            <div style={{ height: '240px', display: 'flex', alignItems: 'flex-end', gap: '0.5rem', paddingBottom: '1.5rem', borderBottom: '1px solid var(--border-soft)' }}>
+                                {chartPercents.map((h, i) => (
+                                    <div key={i} style={{ flex: 1, position: 'relative', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                                         <div
                                             style={{
-                                                height: `${h}%`,
-                                                background: i === chartData.length - 2 ? 'var(--primary)' : 'var(--border-soft)',
+                                                width: '100%',
+                                                height: `${Math.max(h, 4)}%`,
+                                                background: i === chartPercents.length - 1 ? 'var(--primary)' : 'var(--border-soft)',
                                                 borderRadius: '6px 6px 0 0',
-                                                transition: 'all 0.5s ease'
+                                                transition: 'all 0.5s ease',
+                                                position: 'relative',
                                             }}
+                                            title={`${t('currency_symbol')}${chartData[i].toFixed(0)}`}
                                         />
                                     </div>
                                 ))}
                             </div>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '1rem', color: 'var(--text-soft)', fontSize: '0.7rem', fontWeight: 800 }}>
-                                <span>JAN</span><span>MAR</span><span>MAY</span><span>JUL</span><span>SEP</span><span>NOV</span>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '1rem', color: 'var(--text-soft)', fontSize: '0.6rem', fontWeight: 800 }}>
+                                {chartMonthLabels.filter((_, i) => i % 2 === 0).map((label, i) => (
+                                    <span key={i}>{label}</span>
+                                ))}
                             </div>
                         </div>
 
-                        {/* Market Trends */}
+                        {/* Market Overview (from real products) */}
                         <div className="card-white" style={{ padding: '2.5rem' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem' }}>
                                 <h3 style={{ fontSize: '1.25rem' }}>{t('market_trends')}</h3>
                                 <Info size={16} color="var(--text-soft)" />
                             </div>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                                {marketItems.map((item, i) => (
-                                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem', background: '#fcfcfc', border: '1px solid var(--border-soft)', borderRadius: '12px' }}>
-                                        <div>
-                                            <p style={{ fontWeight: 800, fontSize: '0.95rem', color: 'var(--secondary)' }}>{item.name}</p>
-                                            <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{t('currency_symbol')}{item.price.toFixed(2)} / {t('unit_q')}</p>
+
+                            {marketItems.length === 0 ? (
+                                <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-soft)' }}>
+                                    <Package size={32} style={{ marginBottom: '1rem', opacity: 0.4 }} />
+                                    <p style={{ fontSize: '0.9rem', fontWeight: 600 }}>No crops available yet</p>
+                                </div>
+                            ) : (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                                    {marketItems.map((item, i) => (
+                                        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '1rem', background: '#fcfcfc', border: '1px solid var(--border-soft)', borderRadius: '12px' }}>
+                                            <div>
+                                                <p style={{ fontWeight: 800, fontSize: '0.95rem', color: 'var(--secondary)' }}>{item.name}</p>
+                                                <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                                                    Avg {t('currency_symbol')}{item.avgPrice.toFixed(2)} / {item.unit}
+                                                </p>
+                                            </div>
+                                            <div style={{ textAlign: 'right' }}>
+                                                <p style={{ fontWeight: 800, color: 'var(--secondary)', fontSize: '0.85rem' }}>
+                                                    {item.count} {item.count === 1 ? 'listing' : 'listings'}
+                                                </p>
+                                                <p style={{ fontSize: '0.75rem', color: 'var(--success)', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.25rem', justifyContent: 'flex-end' }}>
+                                                    <CheckCircle2 size={12} /> {item.totalStock} {item.unit} in stock
+                                                </p>
+                                            </div>
                                         </div>
-                                        <div style={{ textAlign: 'right' }}>
-                                            <p style={{ fontWeight: 800, color: item.change >= 0 ? 'var(--success)' : 'var(--error)', fontSize: '0.85rem', display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: '0.125rem' }}>
-                                                {item.change >= 0 ? <ArrowUpRight size={12} /> : <ArrowDownRight size={12} />} {item.change >= 0 ? '+' : ''}{item.change}%
-                                            </p>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                            <Link href="/market" className="btn-modern btn-primary-modern" style={{ width: '100%', marginTop: '1.75rem', height: '52px' }}>
-                                View All Market Prices
+                                    ))}
+                                </div>
+                            )}
+
+                            <Link href="/buyer/catalog" className="btn-modern btn-primary-modern" style={{ width: '100%', marginTop: '1.75rem', height: '52px' }}>
+                                Browse All Crops
                             </Link>
                         </div>
                     </div>
+
+                    {/* Recent Orders */}
+                    {orders.length > 0 && (
+                        <div className="card-white" style={{ padding: '2.5rem', marginTop: '1.5rem' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
+                                <div>
+                                    <h3 style={{ fontSize: '1.25rem', marginBottom: '0.25rem' }}>Recent Orders</h3>
+                                    <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>Your latest crop purchases</p>
+                                </div>
+                                <Link href="/buyer/orders" className="btn-modern btn-secondary-modern" style={{ padding: '0.5rem 1rem', height: 'auto', fontSize: '0.8rem' }}>
+                                    View All <ChevronRight size={14} />
+                                </Link>
+                            </div>
+                            <div style={{ overflowX: 'auto' }}>
+                                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                                    <thead>
+                                        <tr style={{ borderBottom: '2px solid var(--border-soft)' }}>
+                                            <th style={{ textAlign: 'left', padding: '1rem 0', color: 'var(--text-soft)', fontSize: '0.7rem', textTransform: 'uppercase', fontWeight: 800, letterSpacing: '1px' }}>Crop</th>
+                                            <th style={{ textAlign: 'left', padding: '1rem 0', color: 'var(--text-soft)', fontSize: '0.7rem', textTransform: 'uppercase', fontWeight: 800, letterSpacing: '1px' }}>Quantity</th>
+                                            <th style={{ textAlign: 'left', padding: '1rem 0', color: 'var(--text-soft)', fontSize: '0.7rem', textTransform: 'uppercase', fontWeight: 800, letterSpacing: '1px' }}>Amount</th>
+                                            <th style={{ textAlign: 'left', padding: '1rem 0', color: 'var(--text-soft)', fontSize: '0.7rem', textTransform: 'uppercase', fontWeight: 800, letterSpacing: '1px' }}>Status</th>
+                                            <th style={{ textAlign: 'left', padding: '1rem 0', color: 'var(--text-soft)', fontSize: '0.7rem', textTransform: 'uppercase', fontWeight: 800, letterSpacing: '1px' }}>Date</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {orders.slice(0, 5).map((order) => (
+                                            <tr key={order.id} style={{ borderBottom: '1px solid var(--border-soft)' }}>
+                                                <td style={{ padding: '1.25rem 0' }}>
+                                                    <p style={{ fontWeight: 800, fontSize: '0.925rem' }}>{order.product_name}</p>
+                                                    <p style={{ fontSize: '0.75rem', color: 'var(--text-soft)', fontWeight: 600 }}>#{order.id.slice(0, 8).toUpperCase()}</p>
+                                                </td>
+                                                <td style={{ padding: '1.25rem 0', fontSize: '0.9rem', fontWeight: 700 }}>
+                                                    {order.quantity} {order.product_unit}
+                                                </td>
+                                                <td style={{ padding: '1.25rem 0', fontWeight: 900 }}>
+                                                    {t('currency_symbol')}{order.total_price.toFixed(2)}
+                                                </td>
+                                                <td style={{ padding: '1.25rem 0' }}>
+                                                    <span className={`badge-clean ${order.status === 'completed' ? 'badge-success' : order.status === 'cancelled' ? 'badge-error' : order.status === 'reserved' ? 'badge-success' : 'badge-pending'}`}>
+                                                        {order.status === 'pending' ? 'PENDING' : order.status === 'approved' ? 'APPROVED • PAY NOW' : order.status.toUpperCase()}
+                                                    </span>
+                                                </td>
+                                                <td style={{ padding: '1.25rem 0', fontSize: '0.85rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                                                    {new Date(order.created_at).toLocaleDateString('en-US', { month: 'short', day: '2-digit' })}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    )}
                 </>
             )}
+
+            <style jsx>{`
+                @keyframes spin {
+                    from { transform: rotate(0deg); }
+                    to { transform: rotate(360deg); }
+                }
+            `}</style>
         </DashboardLayout>
     );
 }

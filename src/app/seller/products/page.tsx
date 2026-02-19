@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import DashboardLayout from '@/components/DashboardLayout';
 import { Product } from '@/lib/supabase';
-import { db, collection, query, where, orderBy, getDocs, doc, updateDoc } from '@/lib/firebase';
+import { db, collection, query, where, orderBy, getDocs, doc, updateDoc, deleteDoc } from '@/lib/firebase';
 import { useAuth } from '@/context/AuthContext';
 import { Plus, Edit, Trash2, ExternalLink, Loader2, Info, Package, MoreHorizontal, ArrowRight } from 'lucide-react';
 import Link from 'next/link';
@@ -42,6 +42,17 @@ export default function MyProducts() {
             setProducts(products.map(p => p.id === productId ? { ...p, is_active: !currentStatus } : p));
         } catch (err) {
             console.error('Error toggling status:', err);
+        }
+    };
+
+    const handleDelete = async (productId: string) => {
+        if (!confirm('Are you sure you want to delete this crop listing?')) return;
+        try {
+            await deleteDoc(doc(db, 'products', productId));
+            setProducts(products.filter(p => p.id !== productId));
+        } catch (err) {
+            console.error('Error deleting product:', err);
+            alert('Failed to delete product.');
         }
     };
 
@@ -103,11 +114,11 @@ export default function MyProducts() {
                                 <div style={{ padding: '1rem', background: 'var(--bg-main)', borderRadius: '12px', marginBottom: '1.5rem' }}>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
                                         <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-soft)' }}>Price</span>
-                                        <span style={{ fontWeight: 800, color: 'var(--secondary)' }}>{t('currency_symbol')}{product.price_per_unit} / {t('unit_q')}</span>
+                                        <span style={{ fontWeight: 800, color: 'var(--secondary)' }}>{t('currency_symbol')}{product.price_per_unit} / {product.unit}</span>
                                     </div>
                                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                                         <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-soft)' }}>Stock</span>
-                                        <span style={{ fontWeight: 800, color: 'var(--secondary)' }}>{product.quantity_available} {t('unit_q')}</span>
+                                        <span style={{ fontWeight: 800, color: 'var(--secondary)' }}>{product.quantity_available} {product.unit}</span>
                                     </div>
                                 </div>
 
@@ -119,10 +130,14 @@ export default function MyProducts() {
                                     >
                                         {product.is_active ? 'Hide' : 'Show'}
                                     </button>
-                                    <button className="btn-modern btn-secondary-modern" style={{ padding: '0', width: '40px', height: '40px' }}>
+                                    <Link href={`/seller/products/${product.id}/edit`} className="btn-modern btn-secondary-modern" style={{ padding: '0', width: '40px', height: '40px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
                                         <Edit size={16} />
-                                    </button>
-                                    <button className="btn-modern btn-secondary-modern" style={{ padding: '0', width: '40px', height: '40px', color: 'var(--error)' }}>
+                                    </Link>
+                                    <button
+                                        onClick={() => handleDelete(product.id)}
+                                        className="btn-modern btn-secondary-modern"
+                                        style={{ padding: '0', width: '40px', height: '40px', color: 'var(--error)' }}
+                                    >
                                         <Trash2 size={16} />
                                     </button>
                                 </div>
